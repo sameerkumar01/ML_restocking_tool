@@ -1,102 +1,157 @@
-#  Mobile Inventory Restocking Tool
+# Mobile Inventory Restocking Tool V2
 
-> A Machine Learning-powered recommender system utilizing KNN, KMeans, and Growth-Share Matrix to optimize inventory.
->
+A production-oriented machine learning application for demand forecasting, market scoring, sentiment-ready data ingestion and inventory allocation.
 
+## What changed in V2
 
----
+V2 replaces the notebook-only workflow with reusable Python modules and a Streamlit application. It keeps exponential smoothing, country and age analysis, profit-aware ranking, unavailable-product filtering and exact stock allocation.
 
-## ✨ Key Features
+The advanced stack includes:
 
-- **Smart Recommendations** based on customer reviews and sentiment
-- **Clustering Algorithms** (KMeans) to segment the mobile market
-- **Alternative Suggestions** using K-Nearest Neighbors (KNN)
-- **Growth-Share Matrix** implementation for strategic inventory planning
-- **Sentiment Analysis** 😄 👍 📱
+- XGBoost classification for product-success scoring
+- Random Forest as a comparison model
+- XGBoost regression with lag features for demand forecasting
+- Damped exponential smoothing retained as a statistical forecast
+- A blended statistical and machine learning forecast
+- TF-IDF and lexicon features with a calibrated linear SVM for sentiment analysis
+- GenAI-assisted schema mapping for uploaded datasets
+- Deterministic schema validation and type conversion
+- Exact largest-remainder stock allocation
+- Streamlit interface and downloadable recommendations
 
+## Architecture
 
-
----
- 
-## 🛠️ Tech Stack
- 
-- **Python 3.x**
-- `pandas` — data loading and manipulation
-- `numpy` — number crunching
-- `scikit-learn` — machine learning models
-- `matplotlib` + `seaborn` — graphs and charts
----
-
-## 💻 Core Algorithm
-
-```python
-def recommend_alternative_phones(target_features, k=5):
-    # Standardize the input features
-    scaled_features = scaler.transform([target_features])
-    
-    # Use KNN to find the closest matches in our inventory
-    distances, indices = knn_model.kneighbors(scaled_features, n_neighbors=k)
-    
-    recommended_phones = data.iloc[indices[0]]
-    return recommended_phones[['Brand', 'Model', 'Price_INR', 'Specs_Score']]
+```text
+app.py
+src/
+  allocation.py
+  forecasting.py
+  pipeline.py
+  schema.py
+  sentiment.py
+tests/
+  test_core.py
+model.ipynb
+visual.ipynb
+Mobile Reviews Sentiment.csv
 ```
 
+The original notebooks remain available for experiment history. The V2 application uses the modules under `src`.
 
+## Data modes
 
-##  System Architecture
+- Full mode: product, price, date, demand or review records, and sentiment information
+- Forecast mode: product, price, date, and demand or review records
+- Review mode: product, price, and review text or sentiment
+- Recommendation mode: product and price
 
-### Recommendation Engine Flow
+Product and price are required. Optional ratings, age, brand and country receive safe defaults when absent.
 
-```mermaid
-flowchart LR
-    A[Raw Mobile Data] --> B{Clean & Process?}
-    B -->|Yes| C[Apply KMeans Clustering]
-    B -->|No| D[Data Wrangling]
-    C --> E[Calculate Growth-Share]
-    D --> B
-    E --> F[Generate Stocking Recommendations]
+## GenAI schema mapping
+
+The optional GenAI mapper sends only column names, inferred types and nullability. It does not send dataset rows. The model returns a structured mapping, which Python validates before applying approved renaming and type conversions. Generated code is not executed.
+
+```bash
+export OPENAI_API_KEY="your-key"
 ```
 
-### User Interaction Sequence
+Manual and deterministic mapping remain available without an API key.
 
-```mermaid
-sequenceDiagram
-    User->>System: Input target specs & price
-    System->>Model: Process via KNN
-    Model->>Database: Fetch nearest neighbors
-    Database->>Model: Return top 5 alternatives
-    Model->>User: Display recommended phones
+## Canonical fields
+
+Required:
+
+- `model`
+- `price_inr` or `price_usd`
+
+Optional:
+
+- `review_id`
+- `brand`
+- `country`
+- `age`
+- `review_date`
+- `review_text`
+- `sentiment`
+- `rating`
+- `battery_life_rating`
+- `camera_rating`
+- `performance_rating`
+- `design_rating`
+- `display_rating`
+- `units_sold`
+- `purchase_cost`
+
+Alternate names such as `product`, `mobile_name`, `nation`, `sales` and `cost` can be mapped to this schema.
+
+## Modeling approach
+
+### Product-success model
+
+Country and product records are aggregated into a market table. A proxy winner label is created from country-level sentiment and demand thresholds. XGBoost is the default classifier, with Random Forest available for comparison.
+
+The built-in dataset contains review activity rather than verified transactions, so the target is a proxy. Production deployments should use an observed outcome such as target attainment, stock-out risk or profitable restocking.
+
+### Demand forecast
+
+Monthly demand uses `units_sold` when available. Otherwise, monthly review volume is used as a demand proxy. The forecast combines damped exponential smoothing with XGBoost regression using three lags and a rolling mean. Short histories fall back to exponential smoothing or the historical mean.
+
+### Sentiment
+
+The sentiment module combines word and bigram TF-IDF features with lexicon features for positive terms, negative terms, negations and intensifiers. A calibrated linear SVM produces class probabilities. A labeled `review_text` dataset is required to train it; the built-in dataset can continue using its existing sentiment column when text is unavailable.
+
+### Inventory allocation
+
+The final rank uses the harmonic mean of success probability and normalized estimated profit. Largest-remainder allocation guarantees that suggested quantities sum exactly to the requested units.
+
+## Installation
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
----
+On Windows:
 
-##  Feature Comparison
+```bash
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-| Feature | ML Restocking Tool (Ours) | Traditional Guesswork |
-|---|---|---|
-| Data-Driven Decisions | ✅ Sentiment & Specs | ❌ Gut Feeling |
-| Alternative Suggestions | ✅ Automated via KNN | 🔄 Manual Search |
-| Market Segmentation | ✅ KMeans Clustering | ❌ / Limited |
-| Strategic Portfolio | ✅ Growth-Share Matrix | ❌ / Limited |
+## Run
 
----
+```bash
+streamlit run app.py
+```
 
-##  Project Status
+Choose the built-in dataset or upload a CSV/XLSX file, confirm the schema mapping, select the target market and generate a stocking plan.
 
-- [x] Clean and preprocess sentiment data
-- [x] Implement KMeans for market clustering
-- [x] Build the KNN recommender engine
-- [x] Apply Growth-Share matrix logic
-- [ ] Deploy as an interactive web dashboard
+## Tests
 
----
+```bash
+pytest -q
+```
 
-##  Technical Notes
+The tests cover exact allocation, zero-demand fallback, deterministic schema mapping, required-field validation and invalid types.
 
-- The dataset handles missing values by either dropping them or **imputing** them using the *mean* or *median* values.
-- For highlighting important predictions, look for the high-margin models or review the sentiment scores.
-- Press `Shift` + `Enter` to run Jupyter Notebook cells.
-- Algorithmic complexity: O(n²) for brute-force KNN, O(log n) for tree-based variants.
+## Current assumptions
 
----
+- Built-in review counts are demand proxies, not confirmed sales.
+- USD prices use a fixed conversion rate of 87 INR per USD.
+- Margins and return rates are heuristic until transaction-level data is provided.
+- The winner label is based on relative sentiment and demand within each country.
+- GenAI mapping is advisory and always followed by deterministic validation.
 
+## Recommended production data
+
+- Historical units sold
+- Current inventory
+- Purchase cost and selling price
+- Supplier lead time
+- Minimum order quantity
+- Maximum supplier capacity
+- Returns and lost sales
+- Storage cost and procurement budget
+
+These fields can support constrained profit optimization and stock-out risk prediction in a later release.
