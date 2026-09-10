@@ -19,6 +19,76 @@ The advanced stack includes:
 - Exact largest-remainder stock allocation
 - Streamlit interface and downloadable recommendations
 
+## V2 workflow
+
+```mermaid
+flowchart TB
+    subgraph INPUT["1. Data ingestion"]
+        direction LR
+        A{Data source} -->|Built-in| B[Default dataset]
+        A -->|Upload| C[CSV or XLSX]
+        C --> D[Profile column metadata]
+        D --> E[GenAI or alias mapping]
+        B --> F[Canonical schema]
+        E --> F
+        F --> G{Schema valid?}
+        G -->|No| H[Show errors]
+        G -->|Yes| I[Country, age, budget and units]
+    end
+
+    subgraph FEATURES["2. Feature engineering"]
+        direction LR
+        J{Review text available?}
+        J -->|Yes| K[TF-IDF and lexicon features]
+        K --> L[Calibrated Linear SVM]
+        J -->|No| M[Existing sentiment or rating proxy]
+        L --> N[Sentiment score]
+        M --> N
+        N --> O[Market and demographic features]
+        O --> P[Margin, return risk and unit profit]
+        O --> Q[Monthly demand and lag features]
+        O --> R[Hardware similarity features]
+    end
+
+    subgraph MODELS["3. Modeling"]
+        direction LR
+        P --> S[XGBoost classifier]
+        P --> T[Random Forest baseline]
+        S --> U[Evaluate and select model]
+        T --> U
+        U --> V[Success probability]
+        Q --> W[Exponential smoothing]
+        Q --> X[XGBoost regression]
+        W --> Y[Blend forecasts]
+        X --> Y
+    end
+
+    subgraph SUBSTITUTE["4. Ranking and substitution"]
+        direction LR
+        V --> Z[Combine success, demand and profit]
+        Y --> Z
+        Z --> AA[Rank candidates]
+        AA --> AB{Available?}
+        AB -->|Yes| AC[Keep recommendation]
+        AB -->|No| AD[KNN similarity search]
+        R --> AD
+        AD --> AE[Check country and budget]
+        AE --> AF[Recalculate score and forecast]
+        AF --> AA
+    end
+
+    subgraph OUTPUT["5. Inventory plan"]
+        direction LR
+        AG[Select top five] --> AH[Allocate exact units]
+        AH --> AI[Estimate revenue and profit]
+        AI --> AJ[Charts and explanations]
+        AJ --> AK[Download stocking plan]
+    end
+
+    I --> J
+    AC --> AG
+```
+
 ## Architecture
 
 ```text
