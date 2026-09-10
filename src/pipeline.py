@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer, SimpleImputer
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
@@ -12,7 +14,9 @@ from .allocation import allocate_units
 from .forecasting import DemandForecaster, monthly_history
 
 
-NUMERIC = ["price_inr", "age", "battery_life_rating", "camera_rating", "performance_rating", "design_rating", "display_rating", "sentiment_score", "net_profit_unit"]
+RATING_NUMERIC = ["rating", "battery_life_rating", "camera_rating", "performance_rating", "design_rating", "display_rating"]
+OTHER_NUMERIC = ["price_inr", "age", "sentiment_score", "net_profit_unit"]
+NUMERIC = RATING_NUMERIC + OTHER_NUMERIC
 CATEGORICAL = ["brand", "country"]
 
 
@@ -65,37 +69,42 @@ class InventoryPipeline:
 
     def _prepare_raw(self, frame):
         data = frame.copy()
-        defaults = {
-            "brand": "Unknown",
-            "country": "Global",
-            "age": 30.0,
-            "rating": 3.0,
-            "battery_life_rating": 3.0,
-            "camera_rating": 3.0,
-            "performance_rating": 3.0,
-            "design_rating": 3.0,
-            "display_rating": 3.0,
-        }
-        for name, value in defaults.items():
+        for name in CATEGORICAL:
             if name not in data:
-                data[name] = value
-        if "price_inr" not in data and "price_usd" in data:
-            data["price_inr"] = pd.to_numeric(data["price_usd"], errors="coerce") * 87.0
+                data[name] = "Unknown" if name == "brand" else "Global"
+            data[name] = data[name].astype("string").str.strip().replace("", pd.NA).fillna("Unknown" if name == "brand" else "Global")
+        data["model"] = data["model"].astype("string").str.strip()
+        for name in RATING_NUMERIC + ["age", "purchase_cost", "units_sold"]:
+            if name in data:
+                data[name] = pd.to_numeric(data[name], errors="coerce")
+        for name in RATING_NUMERIC:
+            if name not in data:
+                data[name] = np.nan
+        if "age" not in data:
+            data["age"] = np.nan
+        country_age = data.groupby("country")["age"].transform("median")
+        global_age = data["age"].median() if data["age"].notna().any() else 30.0
+        data["age"] = data["age"].fillna(country_age).fillna(global_age)
+        if "purchase_cost" in data:
+            brand_cost = data.groupby("brand")["purchase_cost"].transform("median")
+            global_cost = data["purchase_cost"].median()
+            data["purchase_cost"] = data["purchase_cost"].fillna(brand_cost).fillna(global_cost)
+        if "review_text" in data:
+            data["review_text"] = data["review_text"].fillna("").astype(str)
         if "sentiment_score" not in data:
+            rating_proxy = (data["rating"] >= 4).astype(float)
             if "sentiment" in data:
-                data["sentiment_score"] = data["sentiment"].astype(str).str.lower().eq("positive").astype(float)
+                labels = data["sentiment"].astype("string").str.lower()
+                data["sentiment_score"] = labels.map({"positive": 1.0, "negative": 0.0}).fillna(rating_proxy)
             else:
-                data["sentiment_score"] = (pd.to_numeric(data["rating"], errors="coerce") >= 4).astype(float)
+                data["sentiment_score"] = rating_proxy
+        rating_median = data.groupby("brand")["rating"].transform("median")
+        global_rating = data["rating"].median() if data["rating"].notna().any() else 3.0
+        quality_rating = data["rating"].fillna(rating_median).fillna(global_rating)
         margin = np.where(data["brand"].isin(["Xiaomi", "Realme", "OnePlus", "Motorola", "Vivo"]), 0.15, 0.10)
-        quality = 0.7 * pd.to_numeric(data["rating"], errors="coerce").fillna(3) + 1.5 * data["sentiment_score"]
+        quality = 0.7 * quality_rating + 1.5 * data["sentiment_score"]
         data["return_rate"] = 0.02 + 0.18 * np.exp(-0.8 * (quality - 1))
         data["net_profit_unit"] = data["price_inr"] * margin - data["price_inr"] * data["return_rate"] * 0.4
-        for name in NUMERIC:
-            data[name] = pd.to_numeric(data[name], errors="coerce")
-            data[name] = data[name].fillna(data[name].median() if data[name].notna().any() else 0)
-        data["brand"] = data["brand"].astype(str)
-        data["model"] = data["model"].astype(str)
-        data["country"] = data["country"].astype(str)
         if "review_date" in data:
             data["review_date"] = pd.to_datetime(data["review_date"], errors="coerce")
         return data
@@ -103,11 +112,13 @@ class InventoryPipeline:
     def _build_market(self, data):
         aggregations = {name: "mean" for name in NUMERIC}
         aggregations["brand"] = "first"
-        if "units_sold" in data:
-            aggregations["units_sold"] = "sum"
         market = data.groupby(["country", "model"], as_index=False).agg(aggregations)
-        if "units_sold" in market:
-            market = market.rename(columns={"units_sold": "demand"})
+        if "units_sold" in data:
+            known = data.dropna(subset=["units_sold"])
+            demand = known.groupby(["country", "model"], as_index=False)["units_sold"].sum().rename(columns={"units_sold": "demand"})
+            market = market.merge(demand, on=["country", "model"], how="inner")
+            if market.empty:
+                raise ValueError("Training requires known units_sold values; missing regression targets are not imputed.")
         else:
             counts = data.groupby(["country", "model"]).size().rename("demand").reset_index()
             market = market.merge(counts, on=["country", "model"])
@@ -120,9 +131,22 @@ class InventoryPipeline:
         return market
 
     def _model(self):
+        rating_pipeline = Pipeline([
+            ("imputer", IterativeImputer(initial_strategy="median", max_iter=10, random_state=42, skip_complete=True, keep_empty_features=True)),
+            ("scaler", StandardScaler()),
+        ])
+        numeric_pipeline = Pipeline([
+            ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
+            ("scaler", StandardScaler()),
+        ])
+        categorical_pipeline = Pipeline([
+            ("imputer", SimpleImputer(strategy="constant", fill_value="Unknown")),
+            ("encoder", OneHotEncoder(handle_unknown="ignore")),
+        ])
         preprocessor = ColumnTransformer([
-            ("categorical", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL),
-            ("numeric", StandardScaler(), NUMERIC),
+            ("categorical", categorical_pipeline, CATEGORICAL),
+            ("ratings_mice", rating_pipeline, RATING_NUMERIC),
+            ("numeric", numeric_pipeline, OTHER_NUMERIC),
         ])
         if self.model_name == "random_forest":
             estimator = RandomForestClassifier(n_estimators=250, max_depth=10, class_weight="balanced", random_state=42)

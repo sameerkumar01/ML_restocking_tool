@@ -41,3 +41,30 @@ def test_schema_rejects_unconvertible_required_values():
     except SchemaError:
         return
     raise AssertionError("Expected SchemaError")
+
+
+def test_schema_recovers_inr_price_from_usd():
+    frame = pd.DataFrame({"model": ["A", "B"], "price_inr": [10000, None], "price_usd": [100, 200]})
+    adapter = SchemaAdapter()
+    result = adapter.transform(frame, adapter.suggest_mapping(frame))
+    assert result.loc[1, "price_inr"] == 17400
+
+
+def test_schema_rejects_blank_model():
+    frame = pd.DataFrame({"model": [""], "price_inr": [10000]})
+    adapter = SchemaAdapter()
+    try:
+        adapter.transform(frame, adapter.suggest_mapping(frame))
+    except SchemaError:
+        return
+    raise AssertionError("Expected SchemaError")
+
+
+def test_schema_rejects_invalid_forecast_dates():
+    frame = pd.DataFrame({"model": ["A"], "price_inr": [10000], "review_date": ["invalid"], "units_sold": [5]})
+    adapter = SchemaAdapter()
+    try:
+        adapter.transform(frame, adapter.suggest_mapping(frame))
+    except SchemaError:
+        return
+    raise AssertionError("Expected SchemaError")

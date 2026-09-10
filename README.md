@@ -15,6 +15,7 @@ The advanced stack includes:
 - A blended statistical and machine learning forecast
 - TF-IDF and lexicon features with a calibrated linear SVM for sentiment analysis
 - LangChain with Google Gemini for uploaded-dataset schema mapping
+- Type-aware missing-value handling for user-uploaded datasets
 - Deterministic schema validation and type conversion
 - Exact largest-remainder stock allocation
 - Streamlit interface and downloadable recommendations
@@ -33,60 +34,61 @@ flowchart TB
         E --> F
         F --> G{Schema valid?}
         G -->|No| H[Show errors]
-        G -->|Yes| I[Country, age, budget and units]
+        G -->|Yes| I[Type-aware missing-value handling]
+        I --> J[Country, age, budget and units]
     end
 
     subgraph FEATURES["2. Feature engineering"]
         direction LR
-        J{Review text available?}
-        J -->|Yes| K[TF-IDF and lexicon features]
-        K --> L[Calibrated Linear SVM]
-        J -->|No| M[Existing sentiment or rating proxy]
-        L --> N[Sentiment score]
-        M --> N
-        N --> O[Market and demographic features]
-        O --> P[Margin, return risk and unit profit]
-        O --> Q[Monthly demand and lag features]
-        O --> R[Hardware similarity features]
+        K{Review text available?}
+        K -->|Yes| L[TF-IDF and lexicon features]
+        L --> M[Calibrated Linear SVM]
+        K -->|No| N[Existing sentiment or rating proxy]
+        M --> O[Sentiment score]
+        N --> O
+        O --> P[Market and demographic features]
+        P --> Q[Margin, return risk and unit profit]
+        P --> R[Monthly demand and lag features]
+        P --> S[Hardware similarity features]
     end
 
     subgraph MODELS["3. Modeling"]
         direction LR
-        P --> S[XGBoost classifier]
-        P --> T[Random Forest baseline]
-        S --> U[Evaluate and select model]
-        T --> U
-        U --> V[Success probability]
-        Q --> W[Exponential smoothing]
-        Q --> X[XGBoost regression]
-        W --> Y[Blend forecasts]
-        X --> Y
+        Q --> T[XGBoost classifier]
+        Q --> U[Random Forest baseline]
+        T --> V[Evaluate and select model]
+        U --> V
+        V --> W[Success probability]
+        R --> X[Exponential smoothing]
+        R --> Y[XGBoost regression]
+        X --> Z[Blend forecasts]
+        Y --> Z
     end
 
     subgraph SUBSTITUTE["4. Ranking and substitution"]
         direction LR
-        V --> Z[Combine success, demand and profit]
-        Y --> Z
-        Z --> AA[Rank candidates]
-        AA --> AB{Available?}
-        AB -->|Yes| AC[Keep recommendation]
-        AB -->|No| AD[KNN similarity search]
-        R --> AD
-        AD --> AE[Check country and budget]
-        AE --> AF[Recalculate score and forecast]
-        AF --> AA
+        W --> AA[Combine success, demand and profit]
+        Z --> AA
+        AA --> AB[Rank candidates]
+        AB --> AC{Available?}
+        AC -->|Yes| AD[Keep recommendation]
+        AC -->|No| AE[KNN similarity search]
+        S --> AE
+        AE --> AF[Check country and budget]
+        AF --> AG[Recalculate score and forecast]
+        AG --> AB
     end
 
     subgraph OUTPUT["5. Inventory plan"]
         direction LR
-        AG[Select top five] --> AH[Allocate exact units]
-        AH --> AI[Estimate revenue and profit]
-        AI --> AJ[Charts and explanations]
-        AJ --> AK[Download stocking plan]
+        AH[Select top five] --> AI[Allocate exact units]
+        AI --> AJ[Estimate revenue and profit]
+        AJ --> AK[Charts and explanations]
+        AK --> AL[Download stocking plan]
     end
 
-    I --> J
-    AC --> AG
+    J --> K
+    AD --> AH
 ```
 
 ## Architecture
@@ -113,7 +115,25 @@ Mobile Reviews Sentiment.csv
 - Review mode: product, price, and review text or sentiment
 - Recommendation mode: product and price
 
-Product and price are required. Optional ratings, age, brand and country receive safe defaults when absent.
+Product and price are required. Optional ratings, age, brand and country are handled according to their data type when values are absent.
+
+## Missing values in uploaded datasets
+
+Uploaded datasets can have incomplete columns without forcing the pipeline to treat every missing value the same way. The ingestion layer first converts mapped features to their canonical types, protects required business fields, and then applies feature-specific handling inside the machine-learning pipeline. Imputers are fitted as part of the scikit-learn preprocessing pipeline, which prevents validation data from leaking into training transformations.
+
+| Data type | Examples | Recommended handling |
+| --- | --- | --- |
+| Required identifiers | `model` | Reject rows or datasets with missing or blank identifiers |
+| Required price | `price_inr`, `price_usd` | Recover INR from USD when possible; otherwise reject invalid values |
+| Correlated numeric features | Product rating fields | MICE with `IterativeImputer` inside the model pipeline |
+| Other numeric predictors | `age`, `purchase_cost` | Country- or brand-level median followed by a safe global median |
+| Categorical features | `brand`, `country` | Fill with `"Unknown"` or `"Global"`, then encode unseen categories safely |
+| Review text | `review_text` | Replace missing text with an empty string before text processing |
+| Regression target | `units_sold` | Never impute training targets; train only on rows with observed values |
+| Missing time periods | Monthly demand | Reindex the monthly series; use zero for absent review activity and short interpolation for sales gaps |
+| Dates | `review_date` | Reject missing or invalid values when forecasting data is supplied |
+
+MICE is reserved for correlated rating variables, where the remaining ratings can help estimate a missing value. Ordinary numeric predictors use simpler median strategies, while categorical values are not passed to KNN imputation because numeric distances between encoded categories would not represent real similarity. XGBoost and Random Forest therefore receive the same leakage-safe, reproducible preprocessing.
 
 ## LangChain and Gemini schema mapping
 
@@ -158,17 +178,17 @@ Alternate names such as `product`, `mobile_name`, `nation`, `sales` and `cost` c
 
 ### Product-success model
 
-Country and product records are aggregated into a market table. A proxy winner label is created from country-level sentiment and demand thresholds. XGBoost is the default classifier, with Random Forest available for comparison.
+Country and product records are aggregated into a market table. A proxy winner label is created from country-level sentiment and demand thresholds. XGBoost is the default classifier, with Random Forest available for comparison. Correlated rating features are imputed with MICE, other numeric values use median strategies, and categorical values use explicit unknown categories.
 
 The built-in dataset contains review activity rather than verified transactions, so the target is a proxy. Production deployments should use an observed outcome such as target attainment, stock-out risk or profitable restocking.
 
 ### Demand forecast
 
-Monthly demand uses `units_sold` when available. Otherwise, monthly review volume is used as a demand proxy. The forecast combines damped exponential smoothing with XGBoost regression using three lags and a rolling mean. Short histories fall back to exponential smoothing or the historical mean.
+Monthly demand uses `units_sold` when available. Missing regression targets are not imputed for training. Otherwise, monthly review volume is used as a demand proxy. The forecast combines damped exponential smoothing with XGBoost regression using three lags and a rolling mean. Monthly series are reindexed so absent review activity can be represented as zero, while short internal sales gaps can be interpolated. Short histories fall back to exponential smoothing or the historical mean.
 
 ### Sentiment
 
-The sentiment module combines word and bigram TF-IDF features with lexicon features for positive terms, negative terms, negations and intensifiers. A calibrated linear SVM produces class probabilities. A labeled `review_text` dataset is required to train it; the built-in dataset can continue using its existing sentiment column when text is unavailable.
+The sentiment module combines word and bigram TF-IDF features with lexicon features for positive terms, negative terms, negations and intensifiers. A calibrated linear SVM produces class probabilities. Missing optional review text becomes an empty string. A labeled `review_text` dataset is required to train the classifier; the built-in dataset can continue using its existing sentiment column when text is unavailable.
 
 ### Inventory allocation
 
@@ -203,7 +223,7 @@ Choose the built-in dataset or upload a CSV/XLSX file, confirm the schema mappin
 pytest -q
 ```
 
-The tests cover exact allocation, zero-demand fallback, deterministic schema mapping, required-field validation and invalid types.
+The tests cover exact allocation, deterministic schema mapping, required-field validation, invalid types, currency recovery, blank identifiers and invalid forecast dates.
 
 ## Current assumptions
 
@@ -212,6 +232,7 @@ The tests cover exact allocation, zero-demand fallback, deterministic schema map
 - Margins and return rates are heuristic until transaction-level data is provided.
 - The winner label is based on relative sentiment and demand within each country.
 - Gemini mapping is advisory and always followed by deterministic validation.
+- Short sales gaps are interpolated only when they occur inside an observed monthly series.
 
 ## Recommended production data
 

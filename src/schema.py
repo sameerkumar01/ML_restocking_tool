@@ -62,14 +62,7 @@ class ValidationResult:
 
 class SchemaAdapter:
     def profile(self, frame):
-        return [
-            {
-                "name": str(column),
-                "type": str(frame[column].dtype),
-                "nullable": bool(frame[column].isna().any()),
-            }
-            for column in frame.columns
-        ]
+        return [{"name": str(column), "type": str(frame[column].dtype), "nullable": bool(frame[column].isna().any())} for column in frame.columns]
 
     def suggest_mapping(self, frame, use_genai=False, model="gemini-flash-latest"):
         mapping = self._deterministic_mapping(frame)
@@ -114,12 +107,16 @@ class SchemaAdapter:
                 result[name] = result[name].astype("string")
         if "price_inr" not in result and "price_usd" in result:
             result["price_inr"] = result["price_usd"] * 87.0
-        required = ["model", "price_inr"]
-        missing = [name for name in required if name not in result]
-        if missing:
-            raise SchemaError("Missing required columns: " + ", ".join(missing))
-        if result[required].isna().any().any():
-            raise SchemaError("Required columns contain values that cannot be converted.")
+        elif "price_usd" in result:
+            result["price_inr"] = result["price_inr"].fillna(result["price_usd"] * 87.0)
+        if "model" not in result or "price_inr" not in result:
+            raise SchemaError("Missing required columns: model and price_inr are required.")
+        invalid_model = result["model"].isna() | result["model"].str.strip().eq("")
+        invalid_price = result["price_inr"].isna() | result["price_inr"].le(0)
+        if invalid_model.any() or invalid_price.any():
+            raise SchemaError("Required model and price values must be present and valid.")
+        if "review_date" in result and ({"units_sold", "review_id"} & set(result.columns)) and result["review_date"].isna().any():
+            raise SchemaError("Forecasting data contains missing or invalid review_date values.")
         return result
 
     def _deterministic_mapping(self, frame):
@@ -135,7 +132,6 @@ class SchemaAdapter:
     def _genai_mapping(self, frame, model):
         if not os.getenv("GOOGLE_API_KEY"):
             raise SchemaError("GOOGLE_API_KEY is required for Gemini schema mapping.")
-
         from langchain_core.prompts import ChatPromptTemplate
         from langchain_google_genai import ChatGoogleGenerativeAI
         from pydantic import BaseModel, Field
@@ -143,25 +139,13 @@ class SchemaAdapter:
         class MappingResponse(BaseModel):
             mapping: dict[str, str] = Field(default_factory=dict)
 
-        payload = {
-            "input": self.profile(frame),
-            "allowed_output": CANONICAL_TYPES,
-        }
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "Map source column names to allowed canonical features. "
-                    "Do not infer or transform row values. Return only the mapping.",
-                ),
-                ("human", "{payload}"),
-            ]
-        )
+        payload = {"input": self.profile(frame), "allowed_output": CANONICAL_TYPES}
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Map source column names to allowed canonical features. Do not infer or transform row values. Return only the mapping."),
+            ("human", "{payload}"),
+        ])
         llm = ChatGoogleGenerativeAI(model=model, temperature=0)
-        chain = prompt | llm.with_structured_output(
-            MappingResponse,
-            method="json_schema",
-        )
+        chain = prompt | llm.with_structured_output(MappingResponse, method="json_schema")
         response = chain.invoke({"payload": json.dumps(payload)})
         if isinstance(response, dict):
             return response.get("mapping", {})

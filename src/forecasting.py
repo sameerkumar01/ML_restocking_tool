@@ -47,7 +47,15 @@ def monthly_history(frame, model_name, country):
     subset = frame[(frame["model"] == model_name) & (frame["country"] == country)].copy()
     if subset.empty or "review_date" not in subset:
         return pd.Series(dtype=float)
+    subset = subset.dropna(subset=["review_date"])
+    if subset.empty:
+        return pd.Series(dtype=float)
     subset["month"] = pd.to_datetime(subset["review_date"]).dt.to_period("M")
+    full_index = pd.period_range(subset["month"].min(), subset["month"].max(), freq="M")
     if "units_sold" in subset:
-        return subset.groupby("month")["units_sold"].sum().sort_index()
-    return subset.groupby("month").size().sort_index()
+        known = subset.dropna(subset=["units_sold"])
+        if known.empty:
+            return pd.Series(dtype=float)
+        history = known.groupby("month")["units_sold"].sum().sort_index().reindex(full_index)
+        return history.interpolate(limit=2, limit_area="inside")
+    return subset.groupby("month").size().sort_index().reindex(full_index, fill_value=0)
