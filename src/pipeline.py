@@ -27,10 +27,10 @@ class InventoryPipeline:
         if y.nunique() < 2:
             raise ValueError("Training requires both winner and non-winner examples.")
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, stratify=y, random_state=42)
-        _, strategy, scores = select_missing_strategy(self.model_name, X_train, X_test, y_train, y_test)
-        self.metrics["missing_strategy_roc_auc"] = scores
+        _, strategy, scores, holdout_auc = select_missing_strategy(self.model_name, X_train, X_test, y_train, y_test)
+        self.metrics["missing_strategy_cv_roc_auc"] = scores
         self.metrics["selected_missing_strategy"] = strategy
-        self.metrics["roc_auc"] = scores[strategy]
+        self.metrics["roc_auc"] = holdout_auc
         self.model = build_model(self.model_name, strategy)
         self.model.fit(X, y)
         return self
