@@ -1,0 +1,143 @@
+import hashlib
+import os
+
+import pandas as pd
+import streamlit as st
+
+from src.missing_values import missing_value_report
+from src.pipeline import InventoryPipeline
+from src.schema import SchemaAdapter, SchemaError
+
+
+@st.cache_data(show_spinner=False)
+def load_builtin(path):
+    return pd.read_csv(path)
+
+
+@st.cache_resource(show_spinner=False)
+def train_pipeline(data_fingerprint, model_name, _data):
+    return InventoryPipeline(model_name=model_name).fit(_data)
+
+
+def fingerprint(frame):
+    values = pd.util.hash_pandas_object(frame.astype(str), index=True).to_numpy()
+    return hashlib.sha256(values.tobytes()).hexdigest()
+
+
+st.set_page_config(page_title="Inventory Intelligence V2", layout="wide")
+st.title("Inventory Intelligence V2")
+st.caption("Demand forecasting, market scoring, sentiment-ready ingestion and stock allocation")
+
+adapter = SchemaAdapter()
+source = st.radio("Data source", ["Built-in dataset", "Upload dataset"], horizontal=True)
+
+if source == "Built-in dataset":
+    path = "Mobile Reviews Sentiment.csv"
+    frame = load_builtin(path) if os.path.exists(path) else None
+    if frame is None:
+        st.error("The built-in dataset was not found.")
+        st.stop()
+    mapping = adapter.suggest_mapping(frame)
+else:
+    uploaded = st.file_uploader("Upload CSV or XLSX", type=["csv", "xlsx"])
+    if uploaded is None:
+        st.info("Upload a dataset to continue.")
+        st.stop()
+    if uploaded.size > 50 * 1024 * 1024:
+        st.error("Uploads are limited to 50 MB.")
+        st.stop()
+    frame = pd.read_csv(uploaded) if uploaded.name.lower().endswith(".csv") else pd.read_excel(uploaded)
+    if len(frame) > 500_000 or len(frame.columns) > 200:
+        st.error("Uploads are limited to 500,000 rows and 200 columns.")
+        st.stop()
+    use_genai = st.checkbox("Use LangChain with Gemini schema mapping", value=False)
+    try:
+        mapping = adapter.suggest_mapping(frame, use_genai=use_genai)
+    except SchemaError as error:
+        st.error(str(error))
+        st.stop()
+
+st.subheader("Schema mapping")
+canonical = [
+    "Ignore", "review_id", "brand", "model", "price_usd", "price_inr", "country", "age",
+    "review_date", "review_text", "sentiment", "rating", "battery_life_rating", "camera_rating",
+    "performance_rating", "design_rating", "display_rating", "units_sold", "purchase_cost", "restock_success",
+]
+editable = pd.DataFrame([{"Source": column, "Mapped feature": mapping.get(column, "Ignore")} for column in frame.columns])
+edited = st.data_editor(editable, hide_index=True, disabled=["Source"], column_config={"Mapped feature": st.column_config.SelectboxColumn(options=canonical)}, use_container_width=True)
+mapping = {row["Source"]: row["Mapped feature"] for _, row in edited.iterrows() if row["Mapped feature"] != "Ignore"}
+validation = adapter.validate(frame, mapping)
+
+if validation.errors:
+    for error in validation.errors:
+        st.error(error)
+    st.stop()
+for warning in validation.warnings:
+    st.warning(warning)
+st.success(f"Dataset is compatible in {validation.mode} mode.")
+
+try:
+    transformed = adapter.transform_with_rejections(frame, mapping)
+    data = transformed.data
+except SchemaError as error:
+    st.error(str(error))
+    st.stop()
+
+if source == "Upload dataset":
+    report = missing_value_report(data)
+    with st.expander("Missing-value report", expanded=not report.empty):
+        if report.empty:
+            st.success("No optional values require handling after schema conversion.")
+        else:
+            st.dataframe(report, use_container_width=True, hide_index=True)
+            st.caption("Model imputers are fitted within training folds to prevent validation leakage.")
+    left_download, right_download = st.columns(2)
+    left_download.download_button("Download canonical valid rows", data.to_csv(index=False), "canonical_valid_rows.csv", "text/csv")
+    if not transformed.rejected.empty:
+        st.warning(f"{len(transformed.rejected):,} invalid rows were excluded; {len(data):,} valid rows remain.")
+        right_download.download_button("Download rejected rows", transformed.rejected.to_csv(index=False), "rejected_rows.csv", "text/csv")
+
+countries = sorted(data["country"].dropna().astype(str).unique())
+left, middle, right = st.columns(3)
+country = left.selectbox("Country", countries)
+age = middle.number_input("Target age", min_value=13, max_value=100, value=30)
+budget = right.number_input("Maximum unit selling price", min_value=1.0, value=float(data["price_inr"].median()))
+total_units = left.number_input("Total units", min_value=1, value=500)
+model_name = middle.selectbox("Supervised success model", ["xgboost", "random_forest"])
+unavailable = right.multiselect("Unavailable models", sorted(data["model"].astype(str).unique()))
+
+if st.button("Generate stocking plan", type="primary"):
+    with st.spinner("Training and generating recommendations"):
+        try:
+            pipeline = train_pipeline(fingerprint(data), model_name, data)
+            plan = pipeline.recommend(country, age, budget, total_units, unavailable)
+        except Exception as error:
+            st.error(f"Pipeline failed: {error}")
+            st.stop()
+    if plan.empty:
+        st.warning("No profitable compatible products were found.")
+    else:
+        ranking_mode = pipeline.metrics.get("ranking_mode")
+        if ranking_mode == "supervised":
+            scores = pipeline.metrics.get("missing_strategy_cv_roc_auc", {})
+            selected = pipeline.metrics.get("selected_missing_strategy")
+            holdout = pipeline.metrics.get("roc_auc")
+            st.caption(f"Supervised ranking. Selected preprocessing: {selected}. Cross-validation ROC-AUC: {scores}. Holdout ROC-AUC: {holdout:.3f}")
+        else:
+            st.caption("Transparent rule-based ranking is active because no sufficiently large external restock_success target was supplied.")
+        sentiment = pipeline.metrics.get("sentiment", {})
+        if sentiment.get("oof_roc_auc") is not None:
+            st.caption(f"Sentiment out-of-fold ROC-AUC: {sentiment['oof_roc_auc']:.3f}; F1: {sentiment['oof_f1']:.3f}")
+        columns = [
+            "brand", "model", "substitute_for", "substitution_similarity", "price_inr", "purchase_cost",
+            "success_probability", "score", "forecast", "forecast_method", "forecast_mae",
+            "suggested_quantity", "estimated_profit",
+        ]
+        display = plan[[column for column in columns if column in plan]]
+        st.dataframe(display, use_container_width=True, hide_index=True)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Allocated units", int(plan["suggested_quantity"].sum()))
+        c2.metric("Estimated revenue", f"INR {plan['estimated_revenue'].sum():,.0f}")
+        c3.metric("Estimated profit", f"INR {plan['estimated_profit'].sum():,.0f}")
+        st.bar_chart(plan.set_index("model")[["forecast"]])
+        st.download_button("Download plan", plan.to_csv(index=False), "stocking_plan.csv", "text/csv")

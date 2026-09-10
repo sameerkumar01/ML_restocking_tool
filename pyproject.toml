@@ -1,0 +1,10 @@
+[project]
+name = "mobile-inventory-restocking-tool"
+version = "2.0.0"
+description = "Schema-adaptive inventory recommendation and demand forecasting application"
+requires-python = ">=3.11,<3.14"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
