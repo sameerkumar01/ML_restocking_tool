@@ -1,22 +1,23 @@
 # Mobile Inventory Restocking Tool V2
 
-A production-oriented machine learning application for demand forecasting, market scoring, sentiment-ready data ingestion and inventory allocation.
+A production-oriented machine learning application for demand forecasting, market scoring, sentiment analysis, schema-adaptive data ingestion and inventory allocation.
 
 ## What changed in V2
 
-V2 replaces the notebook-only workflow with reusable Python modules and a Streamlit application. It keeps exponential smoothing, country and age analysis, profit-aware ranking, unavailable-product filtering and exact stock allocation.
+V2 replaces the notebook-only workflow with reusable Python modules and a Streamlit application. It keeps exponential smoothing, country and age analysis, and exact stock allocation while adding advanced models, user-dataset ingestion, missing-value controls and KNN-based product substitution.
 
 The advanced stack includes:
 
 - XGBoost classification for product-success scoring
 - Random Forest as a comparison model
+- Cross-validated comparison of MICE and native XGBoost missing-value handling
 - XGBoost regression with lag features for demand forecasting
-- Damped exponential smoothing retained as a statistical forecast
-- A blended statistical and machine learning forecast
+- Damped exponential smoothing retained in a blended forecast
 - TF-IDF and lexicon features with a calibrated linear SVM for sentiment analysis
 - LangChain with Google Gemini for uploaded-dataset schema mapping
-- Type-aware missing-value handling for user-uploaded datasets
-- Deterministic schema validation and type conversion
+- Type-aware missing-value handling and downloadable rejected-row reports
+- Profit calculations based on observed purchase cost when available
+- KNN-based substitutes for unavailable recommended products
 - Exact largest-remainder stock allocation
 - Streamlit interface and downloadable recommendations
 
@@ -32,22 +33,22 @@ flowchart TB
         D --> E[LangChain and Gemini mapping]
         B --> F[Canonical schema]
         E --> F
-        F --> G{Schema valid?}
-        G -->|No| H[Show errors]
+        F --> G{Valid row?}
+        G -->|No| H[Rejected-row report]
         G -->|Yes| I[Type-aware missing-value handling]
         I --> J[Country, age, budget and units]
     end
 
     subgraph FEATURES["2. Feature engineering"]
         direction LR
-        K{Review text available?}
+        K{Usable review text?}
         K -->|Yes| L[TF-IDF and lexicon features]
         L --> M[Calibrated Linear SVM]
-        K -->|No| N[Existing sentiment or rating proxy]
+        K -->|No| N[Sentiment label or rating proxy]
         M --> O[Sentiment score]
         N --> O
         O --> P[Market and demographic features]
-        P --> Q[Margin, return risk and unit profit]
+        P --> Q[Observed cost, return risk and unit profit]
         P --> R[Monthly demand and lag features]
         P --> S[Hardware similarity features]
     end
@@ -56,7 +57,7 @@ flowchart TB
         direction LR
         Q --> T[XGBoost classifier]
         Q --> U[Random Forest baseline]
-        T --> V[Evaluate and select model]
+        T --> V[Cross-validation and holdout evaluation]
         U --> V
         V --> W[Success probability]
         R --> X[Exponential smoothing]
@@ -75,7 +76,7 @@ flowchart TB
         AC -->|No| AE[KNN similarity search]
         S --> AE
         AE --> AF[Check country and budget]
-        AF --> AG[Recalculate score and forecast]
+        AF --> AG[Insert substitute and re-rank]
         AG --> AB
     end
 
@@ -83,7 +84,7 @@ flowchart TB
         direction LR
         AH[Select top five] --> AI[Allocate exact units]
         AI --> AJ[Estimate revenue and profit]
-        AJ --> AK[Charts and explanations]
+        AJ --> AK[Charts and evaluation details]
         AK --> AL[Download stocking plan]
     end
 
@@ -98,9 +99,12 @@ app.py
 src/
   allocation.py
   forecasting.py
+  missing_values.py
+  model_selection.py
   pipeline.py
   schema.py
   sentiment.py
+  substitution.py
 notebooks/
   eda_v2.ipynb
 tests/
@@ -119,21 +123,23 @@ Product and price are required. Optional ratings, age, brand and country are han
 
 ## Missing values in uploaded datasets
 
-Uploaded datasets can have incomplete columns without forcing the pipeline to treat every missing value the same way. The ingestion layer first converts mapped features to their canonical types, protects required business fields, and then applies feature-specific handling inside the machine-learning pipeline. Imputers are fitted as part of the scikit-learn preprocessing pipeline, which prevents validation data from leaking into training transformations.
+Uploaded datasets can contain incomplete records without forcing the pipeline to treat every missing value the same way. The ingestion layer converts mapped fields to canonical types, recovers prices when possible, separates unusable rows, and displays a missing-value report before training. Valid rows continue through the pipeline, while rejected rows can be downloaded for correction.
 
-| Data type | Examples | Recommended handling |
+Model imputers are fitted inside scikit-learn pipelines. This prevents validation information from leaking into training transformations. XGBoost with MICE is compared against XGBoost's native missing-value handling through stratified cross-validation, and the winning strategy is checked on a holdout set before the final model is trained.
+
+| Data type | Examples | Handling |
 | --- | --- | --- |
-| Required identifiers | `model` | Reject rows or datasets with missing or blank identifiers |
-| Required price | `price_inr`, `price_usd` | Recover INR from USD when possible; otherwise reject invalid values |
-| Correlated numeric features | Product rating fields | MICE with `IterativeImputer` inside the model pipeline |
-| Other numeric predictors | `age`, `purchase_cost` | Country- or brand-level median followed by a safe global median |
-| Categorical features | `brand`, `country` | Fill with `"Unknown"` or `"Global"`, then encode unseen categories safely |
-| Review text | `review_text` | Replace missing text with an empty string before text processing |
-| Regression target | `units_sold` | Never impute training targets; train only on rows with observed values |
-| Missing time periods | Monthly demand | Reindex the monthly series; use zero for absent review activity and short interpolation for sales gaps |
-| Dates | `review_date` | Reject missing or invalid values when forecasting data is supplied |
+| Required identifiers | `model` | Reject rows with missing or blank identifiers |
+| Required price | `price_inr`, `price_usd` | Recover INR from USD when possible; otherwise reject the row |
+| Correlated numeric features | Product rating fields | MICE with `IterativeImputer` inside the training pipeline |
+| Other numeric predictors | `age`, `purchase_cost` | Country- or brand-level median followed by a safe global fallback |
+| Categorical features | `brand`, `country` | Fill with `"Unknown"` or `"Global"` and safely encode unseen categories |
+| Review text | `review_text` | Replace missing text with an empty string and use a sentiment fallback when needed |
+| Regression target | `units_sold` | Never impute training targets; train only with observed values |
+| Missing time periods | Monthly demand | Reindex the series; use zero for absent review activity and short interpolation for internal sales gaps |
+| Dates | `review_date` | Reject invalid forecasting rows and report the reason |
 
-MICE is reserved for correlated rating variables, where the remaining ratings can help estimate a missing value. Ordinary numeric predictors use simpler median strategies, while categorical values are not passed to KNN imputation because numeric distances between encoded categories would not represent real similarity. XGBoost and Random Forest therefore receive the same leakage-safe, reproducible preprocessing.
+MICE is reserved for correlated rating variables. Ordinary numeric predictors use simpler median strategies. Categorical fields are not passed to KNN imputation because numeric distances between encoded categories would not represent meaningful similarity. KNN is instead used where distance is meaningful: finding a similar available product by price and hardware ratings.
 
 ## LangChain and Gemini schema mapping
 
@@ -145,7 +151,7 @@ Create a Gemini API key in Google AI Studio and set it before starting the app:
 export GOOGLE_API_KEY="your-key"
 ```
 
-Gemini API free-tier availability and rate limits depend on Google's current terms and the selected region. Manual and deterministic mapping remain available without an API key.
+Gemini API free-tier availability and rate limits depend on Google's current terms and selected region. Manual and deterministic mapping remain available without an API key.
 
 ## Canonical fields
 
@@ -178,21 +184,27 @@ Alternate names such as `product`, `mobile_name`, `nation`, `sales` and `cost` c
 
 ### Product-success model
 
-Country and product records are aggregated into a market table. A proxy winner label is created from country-level sentiment and demand thresholds. XGBoost is the default classifier, with Random Forest available for comparison. Correlated rating features are imputed with MICE, other numeric values use median strategies, and categorical values use explicit unknown categories.
+Country and product records are aggregated into a market table. A proxy winner label is created from country-level sentiment and demand thresholds. XGBoost is the default classifier, with Random Forest available for comparison. Correlated rating features use MICE, other numeric values use median strategies and categorical values use explicit unknown categories.
+
+For XGBoost, MICE and native missing-value handling are compared using stratified cross-validation. The selected strategy is evaluated on a holdout set, and both results are displayed in the application.
 
 The built-in dataset contains review activity rather than verified transactions, so the target is a proxy. Production deployments should use an observed outcome such as target attainment, stock-out risk or profitable restocking.
 
 ### Demand forecast
 
-Monthly demand uses `units_sold` when available. Missing regression targets are not imputed for training. Otherwise, monthly review volume is used as a demand proxy. The forecast combines damped exponential smoothing with XGBoost regression using three lags and a rolling mean. Monthly series are reindexed so absent review activity can be represented as zero, while short internal sales gaps can be interpolated. Short histories fall back to exponential smoothing or the historical mean.
+Monthly demand uses `units_sold` when available, and missing regression targets are excluded rather than imputed. Otherwise, monthly review volume is used as a demand proxy. The forecast combines damped exponential smoothing with XGBoost regression using three lags and a rolling mean. Monthly series are reindexed so absent review activity can be represented as zero, while short internal sales gaps can be interpolated.
 
 ### Sentiment
 
-The sentiment module combines word and bigram TF-IDF features with lexicon features for positive terms, negative terms, negations and intensifiers. A calibrated linear SVM produces class probabilities. Missing optional review text becomes an empty string. A labeled `review_text` dataset is required to train the classifier; the built-in dataset can continue using its existing sentiment column when text is unavailable.
+When sufficient labeled review text is available, the pipeline trains TF-IDF and lexicon features with a calibrated linear SVM and uses positive-class probabilities as sentiment scores. If text is empty or labels are insufficient, it safely falls back to existing sentiment labels or rating-derived scores.
 
-### Inventory allocation
+### Profit and allocation
 
-The final rank uses the harmonic mean of success probability and normalized estimated profit. Largest-remainder allocation guarantees that suggested quantities sum exactly to the requested units.
+Observed `purchase_cost` is used when supplied. Missing costs fall back through brand and global medians before a documented heuristic margin is used. Net unit profit accounts for expected return cost. The final rank uses the harmonic mean of success probability and normalized estimated profit, and largest-remainder allocation guarantees that suggested quantities sum exactly to the requested units.
+
+### Product substitution
+
+Recommendations are scored before availability is checked. If a selected model is unavailable, standardized price and hardware-rating features are passed to a KNN search. The nearest eligible product within the selected country and budget replaces it, and the output records the original model in `substitute_for`.
 
 ## Installation
 
@@ -215,7 +227,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Choose the built-in dataset or upload a CSV/XLSX file, confirm the schema mapping, select the target market and generate a stocking plan.
+Choose the built-in dataset or upload a CSV/XLSX file, confirm the schema mapping, review rejected rows and missing-value handling, select the target market, and generate a stocking plan.
 
 ## Tests
 
@@ -223,16 +235,16 @@ Choose the built-in dataset or upload a CSV/XLSX file, confirm the schema mappin
 pytest -q
 ```
 
-The tests cover exact allocation, deterministic schema mapping, required-field validation, invalid types, currency recovery, blank identifiers and invalid forecast dates.
+Tests cover exact allocation, schema mapping, currency recovery, rejected rows, missing-value reports, sentiment fallback, purchase-cost profit calculations and KNN substitutions.
 
 ## Current assumptions
 
 - Built-in review counts are demand proxies, not confirmed sales.
 - USD prices use a fixed conversion rate of 87 INR per USD.
-- Margins and return rates are heuristic until transaction-level data is provided.
+- Return costs and fallback margins remain heuristic until transaction data is supplied.
 - The winner label is based on relative sentiment and demand within each country.
 - Gemini mapping is advisory and always followed by deterministic validation.
-- Short sales gaps are interpolated only when they occur inside an observed monthly series.
+- Short sales gaps are interpolated only inside an observed monthly series.
 
 ## Recommended production data
 
