@@ -31,12 +31,8 @@ src/
   sentiment.py
 tests/
   test_core.py
-model.ipynb
-visual.ipynb
 Mobile Reviews Sentiment.csv
 ```
-
-The original notebooks remain available for experiment history. The V2 application uses the modules under `src`.
 
 ## Data modes
 
