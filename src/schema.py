@@ -14,15 +14,19 @@ CANONICAL_TYPES = {
     "price_inr": "number", "country": "string", "age": "number", "review_date": "datetime",
     "review_text": "string", "sentiment": "string", "rating": "number",
     "battery_life_rating": "number", "camera_rating": "number", "performance_rating": "number",
-    "design_rating": "number", "display_rating": "number", "units_sold": "number", "purchase_cost": "number",
+    "design_rating": "number", "display_rating": "number", "units_sold": "number",
+    "purchase_cost": "number", "restock_success": "number",
 }
 
 ALIASES = {
     "product": "model", "product_name": "model", "mobile": "model", "mobile_name": "model",
     "manufacturer": "brand", "maker": "brand", "nation": "country", "market": "country",
     "customer_age": "age", "date": "review_date", "review_time": "review_date",
-    "text": "review_text", "review": "review_text", "price": "price_inr", "cost": "price_inr",
-    "sales": "units_sold", "quantity": "units_sold",
+    "text": "review_text", "review": "review_text", "price": "price_inr",
+    "selling_price": "price_inr", "retail_price": "price_inr", "unit_price": "price_inr",
+    "procurement_cost": "purchase_cost", "wholesale_cost": "purchase_cost", "unit_cost": "purchase_cost",
+    "sales": "units_sold", "quantity": "units_sold", "successful_restock": "restock_success",
+    "target_met": "restock_success",
 }
 
 
@@ -46,9 +50,12 @@ class SchemaAdapter:
         return [{"name": str(column), "type": str(frame[column].dtype), "nullable": bool(frame[column].isna().any())} for column in frame.columns]
 
     def suggest_mapping(self, frame, use_genai=False, model="gemini-flash-latest"):
-        mapping = self._deterministic_mapping(frame)
+        deterministic = self._deterministic_mapping(frame)
+        mapping = dict(deterministic)
         if use_genai:
-            mapping.update(self._genai_mapping(frame, model))
+            suggestions = self._genai_mapping(frame, model)
+            for source, target in suggestions.items():
+                mapping.setdefault(source, target)
         return self._sanitize(mapping, frame.columns)
 
     def validate(self, frame, mapping):
@@ -58,7 +65,7 @@ class SchemaAdapter:
         if "model" not in targets:
             errors.append("A product or model column is required.")
         if not ({"price_inr", "price_usd"} & targets):
-            errors.append("A price column in INR or USD is required.")
+            errors.append("A selling-price column in INR or USD is required.")
         if "country" not in targets:
             warnings.append("Country is missing; values will default to Global.")
         has_time = "review_date" in targets
@@ -99,7 +106,7 @@ class SchemaAdapter:
         elif "price_usd" in result:
             result["price_inr"] = result["price_inr"].fillna(result["price_usd"] * 87.0)
         if "model" not in result or "price_inr" not in result:
-            raise SchemaError("Missing required columns: model and price_inr are required.")
+            raise SchemaError("Missing required columns: model and selling price are required.")
 
         reasons = pd.Series("", index=result.index, dtype="string")
 
@@ -107,7 +114,7 @@ class SchemaAdapter:
             reasons.loc[mask] = reasons.loc[mask].apply(lambda value: f"{value}; {reason}".strip("; "))
 
         mark(result["model"].isna() | result["model"].str.strip().eq(""), "missing model")
-        mark(result["price_inr"].isna() | result["price_inr"].le(0), "missing or invalid price")
+        mark(result["price_inr"].isna() | result["price_inr"].le(0), "missing or invalid selling price")
         if "review_date" in result and ({"units_sold", "review_id"} & set(result.columns)):
             mark(result["review_date"].isna(), "missing or invalid forecast date")
 
