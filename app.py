@@ -89,7 +89,11 @@ if st.button("Generate stocking plan", type="primary"):
     if plan.empty:
         st.warning("No compatible products were found.")
     else:
-        display = plan[["brand", "model", "price_inr", "success_probability", "score", "forecast", "suggested_quantity", "estimated_profit"]]
+        scores = pipeline.metrics.get("missing_strategy_roc_auc", {})
+        selected = pipeline.metrics.get("selected_missing_strategy", "mice")
+        st.caption(f"Selected missing-value strategy: {selected}. Validation ROC-AUC: {scores}")
+        columns = ["brand", "model", "substitute_for", "price_inr", "purchase_cost", "success_probability", "score", "forecast", "suggested_quantity", "estimated_profit"]
+        display = plan[[column for column in columns if column in plan]]
         st.dataframe(display, use_container_width=True, hide_index=True)
         c1, c2, c3 = st.columns(3)
         c1.metric("Allocated units", int(plan["suggested_quantity"].sum()))
