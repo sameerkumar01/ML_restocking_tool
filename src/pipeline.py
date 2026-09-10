@@ -85,10 +85,11 @@ class InventoryPipeline:
         country_age = data.groupby("country")["age"].transform("median")
         global_age = data["age"].median() if data["age"].notna().any() else 30.0
         data["age"] = data["age"].fillna(country_age).fillna(global_age)
-        if "purchase_cost" in data:
-            brand_cost = data.groupby("brand")["purchase_cost"].transform("median")
-            global_cost = data["purchase_cost"].median()
-            data["purchase_cost"] = data["purchase_cost"].fillna(brand_cost).fillna(global_cost)
+        if "purchase_cost" not in data:
+            data["purchase_cost"] = np.nan
+        brand_cost = data.groupby("brand")["purchase_cost"].transform("median")
+        global_cost = data["purchase_cost"].median()
+        data["purchase_cost"] = data["purchase_cost"].fillna(brand_cost).fillna(global_cost)
         if "review_text" in data:
             data["review_text"] = data["review_text"].fillna("").astype(str)
         if "sentiment_score" not in data:
@@ -102,9 +103,12 @@ class InventoryPipeline:
         global_rating = data["rating"].median() if data["rating"].notna().any() else 3.0
         quality_rating = data["rating"].fillna(rating_median).fillna(global_rating)
         margin = np.where(data["brand"].isin(["Xiaomi", "Realme", "OnePlus", "Motorola", "Vivo"]), 0.15, 0.10)
+        fallback_cost = data["price_inr"] * (1 - margin)
+        data["purchase_cost"] = data["purchase_cost"].fillna(fallback_cost)
         quality = 0.7 * quality_rating + 1.5 * data["sentiment_score"]
         data["return_rate"] = 0.02 + 0.18 * np.exp(-0.8 * (quality - 1))
-        data["net_profit_unit"] = data["price_inr"] * margin - data["price_inr"] * data["return_rate"] * 0.4
+        data["gross_profit_unit"] = data["price_inr"] - data["purchase_cost"]
+        data["net_profit_unit"] = data["gross_profit_unit"] - data["price_inr"] * data["return_rate"] * 0.4
         if "review_date" in data:
             data["review_date"] = pd.to_datetime(data["review_date"], errors="coerce")
         return data
