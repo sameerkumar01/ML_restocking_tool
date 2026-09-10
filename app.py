@@ -27,7 +27,7 @@ else:
         st.info("Upload a dataset to continue.")
         st.stop()
     frame = pd.read_csv(uploaded) if uploaded.name.lower().endswith(".csv") else pd.read_excel(uploaded)
-    use_genai = st.checkbox("Use GenAI schema mapping", value=False)
+    use_genai = st.checkbox("Use LangChain with Gemini schema mapping", value=False)
     try:
         mapping = adapter.suggest_mapping(frame, use_genai=use_genai)
     except SchemaError as error:

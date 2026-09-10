@@ -62,9 +62,16 @@ class ValidationResult:
 
 class SchemaAdapter:
     def profile(self, frame):
-        return [{"name": str(column), "type": str(frame[column].dtype), "nullable": bool(frame[column].isna().any())} for column in frame.columns]
+        return [
+            {
+                "name": str(column),
+                "type": str(frame[column].dtype),
+                "nullable": bool(frame[column].isna().any()),
+            }
+            for column in frame.columns
+        ]
 
-    def suggest_mapping(self, frame, use_genai=False, model="gpt-4o-mini"):
+    def suggest_mapping(self, frame, use_genai=False, model="gemini-flash-latest"):
         mapping = self._deterministic_mapping(frame)
         if use_genai:
             mapping.update(self._genai_mapping(frame, model))
@@ -126,21 +133,39 @@ class SchemaAdapter:
         return mapping
 
     def _genai_mapping(self, frame, model):
-        if not os.getenv("OPENAI_API_KEY"):
-            raise SchemaError("OPENAI_API_KEY is required for GenAI mapping.")
-        from openai import OpenAI
+        if not os.getenv("GOOGLE_API_KEY"):
+            raise SchemaError("GOOGLE_API_KEY is required for Gemini schema mapping.")
 
-        payload = {"input": self.profile(frame), "allowed_output": CANONICAL_TYPES}
-        response = OpenAI().chat.completions.create(
-            model=model,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": "Map source column names to allowed canonical features. Return a JSON object named mapping. Do not infer or transform row values."},
-                {"role": "user", "content": json.dumps(payload)},
-            ],
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from pydantic import BaseModel, Field
+
+        class MappingResponse(BaseModel):
+            mapping: dict[str, str] = Field(default_factory=dict)
+
+        payload = {
+            "input": self.profile(frame),
+            "allowed_output": CANONICAL_TYPES,
+        }
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "Map source column names to allowed canonical features. "
+                    "Do not infer or transform row values. Return only the mapping.",
+                ),
+                ("human", "{payload}"),
+            ]
         )
-        return json.loads(response.choices[0].message.content).get("mapping", {})
+        llm = ChatGoogleGenerativeAI(model=model, temperature=0)
+        chain = prompt | llm.with_structured_output(
+            MappingResponse,
+            method="json_schema",
+        )
+        response = chain.invoke({"payload": json.dumps(payload)})
+        if isinstance(response, dict):
+            return response.get("mapping", {})
+        return response.mapping
 
     def _sanitize(self, mapping, columns):
         source = {str(column): column for column in columns}

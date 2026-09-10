@@ -14,7 +14,7 @@ The advanced stack includes:
 - Damped exponential smoothing retained as a statistical forecast
 - A blended statistical and machine learning forecast
 - TF-IDF and lexicon features with a calibrated linear SVM for sentiment analysis
-- GenAI-assisted schema mapping for uploaded datasets
+- LangChain with Google Gemini for uploaded-dataset schema mapping
 - Deterministic schema validation and type conversion
 - Exact largest-remainder stock allocation
 - Streamlit interface and downloadable recommendations
@@ -28,7 +28,7 @@ flowchart TB
         A{Data source} -->|Built-in| B[Default dataset]
         A -->|Upload| C[CSV or XLSX]
         C --> D[Profile column metadata]
-        D --> E[GenAI or alias mapping]
+        D --> E[LangChain and Gemini mapping]
         B --> F[Canonical schema]
         E --> F
         F --> G{Schema valid?}
@@ -99,6 +99,8 @@ src/
   pipeline.py
   schema.py
   sentiment.py
+notebooks/
+  eda_v2.ipynb
 tests/
   test_core.py
 Mobile Reviews Sentiment.csv
@@ -113,15 +115,17 @@ Mobile Reviews Sentiment.csv
 
 Product and price are required. Optional ratings, age, brand and country receive safe defaults when absent.
 
-## GenAI schema mapping
+## LangChain and Gemini schema mapping
 
-The optional GenAI mapper sends only column names, inferred types and nullability. It does not send dataset rows. The model returns a structured mapping, which Python validates before applying approved renaming and type conversions. Generated code is not executed.
+The optional mapper uses LangChain's `ChatGoogleGenerativeAI` integration and the `gemini-flash-latest` model alias. It sends only column names, inferred types and nullability. Dataset rows are not sent. Gemini returns a structured mapping through a Pydantic schema, and Python validates it before applying approved renaming and type conversions. Generated code is not executed.
+
+Create a Gemini API key in Google AI Studio and set it before starting the app:
 
 ```bash
-export OPENAI_API_KEY="your-key"
+export GOOGLE_API_KEY="your-key"
 ```
 
-Manual and deterministic mapping remain available without an API key.
+Gemini API free-tier availability and rate limits depend on Google's current terms and the selected region. Manual and deterministic mapping remain available without an API key.
 
 ## Canonical fields
 
@@ -207,7 +211,7 @@ The tests cover exact allocation, zero-demand fallback, deterministic schema map
 - USD prices use a fixed conversion rate of 87 INR per USD.
 - Margins and return rates are heuristic until transaction-level data is provided.
 - The winner label is based on relative sentiment and demand within each country.
-- GenAI mapping is advisory and always followed by deterministic validation.
+- Gemini mapping is advisory and always followed by deterministic validation.
 
 ## Recommended production data
 
