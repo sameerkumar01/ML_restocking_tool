@@ -3,6 +3,7 @@ import os
 import pandas as pd
 import streamlit as st
 
+from src.missing_values import missing_value_report
 from src.pipeline import InventoryPipeline
 from src.schema import SchemaAdapter, SchemaError
 
@@ -54,6 +55,15 @@ try:
 except SchemaError as error:
     st.error(str(error))
     st.stop()
+
+if source == "Upload dataset":
+    report = missing_value_report(data)
+    with st.expander("Missing-value report", expanded=not report.empty):
+        if report.empty:
+            st.success("No missing values remain after schema conversion.")
+        else:
+            st.dataframe(report, use_container_width=True, hide_index=True)
+            st.caption("Imputation is fitted inside the training pipeline where applicable to prevent validation leakage.")
 
 countries = sorted(data["country"].dropna().astype(str).unique())
 left, middle, right = st.columns(3)
