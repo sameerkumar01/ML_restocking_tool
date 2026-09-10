@@ -10,44 +10,19 @@ class SchemaError(ValueError):
 
 
 CANONICAL_TYPES = {
-    "review_id": "string",
-    "brand": "string",
-    "model": "string",
-    "price_usd": "number",
-    "price_inr": "number",
-    "country": "string",
-    "age": "number",
-    "review_date": "datetime",
-    "review_text": "string",
-    "sentiment": "string",
-    "rating": "number",
-    "battery_life_rating": "number",
-    "camera_rating": "number",
-    "performance_rating": "number",
-    "design_rating": "number",
-    "display_rating": "number",
-    "units_sold": "number",
-    "purchase_cost": "number",
+    "review_id": "string", "brand": "string", "model": "string", "price_usd": "number",
+    "price_inr": "number", "country": "string", "age": "number", "review_date": "datetime",
+    "review_text": "string", "sentiment": "string", "rating": "number",
+    "battery_life_rating": "number", "camera_rating": "number", "performance_rating": "number",
+    "design_rating": "number", "display_rating": "number", "units_sold": "number", "purchase_cost": "number",
 }
 
 ALIASES = {
-    "product": "model",
-    "product_name": "model",
-    "mobile": "model",
-    "mobile_name": "model",
-    "manufacturer": "brand",
-    "maker": "brand",
-    "nation": "country",
-    "market": "country",
-    "customer_age": "age",
-    "date": "review_date",
-    "review_time": "review_date",
-    "text": "review_text",
-    "review": "review_text",
-    "price": "price_inr",
-    "cost": "price_inr",
-    "sales": "units_sold",
-    "quantity": "units_sold",
+    "product": "model", "product_name": "model", "mobile": "model", "mobile_name": "model",
+    "manufacturer": "brand", "maker": "brand", "nation": "country", "market": "country",
+    "customer_age": "age", "date": "review_date", "review_time": "review_date",
+    "text": "review_text", "review": "review_text", "price": "price_inr", "cost": "price_inr",
+    "sales": "units_sold", "quantity": "units_sold",
 }
 
 
@@ -58,6 +33,12 @@ class ValidationResult:
     mapping: dict
     errors: list
     warnings: list
+
+
+@dataclass
+class TransformResult:
+    data: pd.DataFrame
+    rejected: pd.DataFrame
 
 
 class SchemaAdapter:
@@ -93,7 +74,15 @@ class SchemaAdapter:
         return ValidationResult(not errors, mode, mapping, errors, warnings)
 
     def transform(self, frame, mapping):
+        transformed = self.transform_with_rejections(frame, mapping)
+        if not transformed.rejected.empty:
+            counts = transformed.rejected["rejection_reason"].value_counts().to_dict()
+            raise SchemaError(f"Invalid required values found: {counts}")
+        return transformed.data
+
+    def transform_with_rejections(self, frame, mapping):
         result = frame.rename(columns=mapping).copy()
+        result["source_row"] = result.index
         if "country" not in result:
             result["country"] = "Global"
         for name, kind in CANONICAL_TYPES.items():
@@ -111,13 +100,23 @@ class SchemaAdapter:
             result["price_inr"] = result["price_inr"].fillna(result["price_usd"] * 87.0)
         if "model" not in result or "price_inr" not in result:
             raise SchemaError("Missing required columns: model and price_inr are required.")
-        invalid_model = result["model"].isna() | result["model"].str.strip().eq("")
-        invalid_price = result["price_inr"].isna() | result["price_inr"].le(0)
-        if invalid_model.any() or invalid_price.any():
-            raise SchemaError("Required model and price values must be present and valid.")
-        if "review_date" in result and ({"units_sold", "review_id"} & set(result.columns)) and result["review_date"].isna().any():
-            raise SchemaError("Forecasting data contains missing or invalid review_date values.")
-        return result
+
+        reasons = pd.Series("", index=result.index, dtype="string")
+
+        def mark(mask, reason):
+            reasons.loc[mask] = reasons.loc[mask].apply(lambda value: f"{value}; {reason}".strip("; "))
+
+        mark(result["model"].isna() | result["model"].str.strip().eq(""), "missing model")
+        mark(result["price_inr"].isna() | result["price_inr"].le(0), "missing or invalid price")
+        if "review_date" in result and ({"units_sold", "review_id"} & set(result.columns)):
+            mark(result["review_date"].isna(), "missing or invalid forecast date")
+
+        rejected = result.loc[reasons.ne("")].copy()
+        rejected["rejection_reason"] = reasons.loc[rejected.index]
+        valid = result.loc[reasons.eq("")].copy()
+        if valid.empty:
+            raise SchemaError("No valid rows remain after required-field validation.")
+        return TransformResult(valid.reset_index(drop=True), rejected.reset_index(drop=True))
 
     def _deterministic_mapping(self, frame):
         mapping = {}
@@ -147,9 +146,7 @@ class SchemaAdapter:
         llm = ChatGoogleGenerativeAI(model=model, temperature=0)
         chain = prompt | llm.with_structured_output(MappingResponse, method="json_schema")
         response = chain.invoke({"payload": json.dumps(payload)})
-        if isinstance(response, dict):
-            return response.get("mapping", {})
-        return response.mapping
+        return response.get("mapping", {}) if isinstance(response, dict) else response.mapping
 
     def _sanitize(self, mapping, columns):
         source = {str(column): column for column in columns}

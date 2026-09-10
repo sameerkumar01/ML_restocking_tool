@@ -51,7 +51,8 @@ for warning in validation.warnings:
 st.success(f"Dataset is compatible in {validation.mode} mode.")
 
 try:
-    data = adapter.transform(frame, mapping)
+    transformed = adapter.transform_with_rejections(frame, mapping)
+    data = transformed.data
 except SchemaError as error:
     st.error(str(error))
     st.stop()
@@ -60,10 +61,13 @@ if source == "Upload dataset":
     report = missing_value_report(data)
     with st.expander("Missing-value report", expanded=not report.empty):
         if report.empty:
-            st.success("No missing values remain after schema conversion.")
+            st.success("No optional values require handling after schema conversion.")
         else:
             st.dataframe(report, use_container_width=True, hide_index=True)
             st.caption("Imputation is fitted inside the training pipeline where applicable to prevent validation leakage.")
+    if not transformed.rejected.empty:
+        st.warning(f"{len(transformed.rejected):,} invalid rows were excluded; {len(data):,} valid rows remain.")
+        st.download_button("Download rejected rows", transformed.rejected.to_csv(index=False), "rejected_rows.csv", "text/csv")
 
 countries = sorted(data["country"].dropna().astype(str).unique())
 left, middle, right = st.columns(3)
