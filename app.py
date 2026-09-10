@@ -36,8 +36,12 @@ else:
         st.stop()
 
 st.subheader("Schema mapping")
+canonical = [
+    "Ignore", "review_id", "brand", "model", "price_usd", "price_inr", "country", "age",
+    "review_date", "review_text", "sentiment", "rating", "battery_life_rating", "camera_rating",
+    "performance_rating", "design_rating", "display_rating", "units_sold", "purchase_cost", "restock_success",
+]
 editable = pd.DataFrame([{"Source": column, "Mapped feature": mapping.get(column, "Ignore")} for column in frame.columns])
-canonical = ["Ignore", "review_id", "brand", "model", "price_usd", "price_inr", "country", "age", "review_date", "review_text", "sentiment", "rating", "battery_life_rating", "camera_rating", "performance_rating", "design_rating", "display_rating", "units_sold", "purchase_cost"]
 edited = st.data_editor(editable, hide_index=True, disabled=["Source"], column_config={"Mapped feature": st.column_config.SelectboxColumn(options=canonical)}, use_container_width=True)
 mapping = {row["Source"]: row["Mapped feature"] for _, row in edited.iterrows() if row["Mapped feature"] != "Ignore"}
 validation = adapter.validate(frame, mapping)
@@ -64,7 +68,7 @@ if source == "Upload dataset":
             st.success("No optional values require handling after schema conversion.")
         else:
             st.dataframe(report, use_container_width=True, hide_index=True)
-            st.caption("Imputation is fitted inside the training pipeline where applicable to prevent validation leakage.")
+            st.caption("Model imputers are fitted within training folds to prevent validation leakage.")
     if not transformed.rejected.empty:
         st.warning(f"{len(transformed.rejected):,} invalid rows were excluded; {len(data):,} valid rows remain.")
         st.download_button("Download rejected rows", transformed.rejected.to_csv(index=False), "rejected_rows.csv", "text/csv")
@@ -73,9 +77,9 @@ countries = sorted(data["country"].dropna().astype(str).unique())
 left, middle, right = st.columns(3)
 country = left.selectbox("Country", countries)
 age = middle.number_input("Target age", min_value=13, max_value=100, value=30)
-budget = right.number_input("Maximum unit price", min_value=1.0, value=float(data["price_inr"].median()))
+budget = right.number_input("Maximum unit selling price", min_value=1.0, value=float(data["price_inr"].median()))
 total_units = left.number_input("Total units", min_value=1, value=500)
-model_name = middle.selectbox("Success model", ["xgboost", "random_forest"])
+model_name = middle.selectbox("Supervised success model", ["xgboost", "random_forest"])
 unavailable = right.multiselect("Unavailable models", sorted(data["model"].astype(str).unique()))
 
 if st.button("Generate stocking plan", type="primary"):
@@ -87,13 +91,21 @@ if st.button("Generate stocking plan", type="primary"):
             st.error(f"Pipeline failed: {error}")
             st.stop()
     if plan.empty:
-        st.warning("No compatible products were found.")
+        st.warning("No profitable compatible products were found.")
     else:
-        scores = pipeline.metrics.get("missing_strategy_cv_roc_auc", {})
-        selected = pipeline.metrics.get("selected_missing_strategy", "mice")
-        holdout = pipeline.metrics.get("roc_auc")
-        st.caption(f"Selected missing-value strategy: {selected}. Cross-validation ROC-AUC: {scores}. Holdout ROC-AUC: {holdout:.3f}")
-        columns = ["brand", "model", "substitute_for", "price_inr", "purchase_cost", "success_probability", "score", "forecast", "suggested_quantity", "estimated_profit"]
+        ranking_mode = pipeline.metrics.get("ranking_mode")
+        if ranking_mode == "supervised":
+            scores = pipeline.metrics.get("missing_strategy_cv_roc_auc", {})
+            selected = pipeline.metrics.get("selected_missing_strategy")
+            holdout = pipeline.metrics.get("roc_auc")
+            st.caption(f"Supervised ranking. Selected preprocessing: {selected}. Cross-validation ROC-AUC: {scores}. Holdout ROC-AUC: {holdout:.3f}")
+        else:
+            st.caption("Transparent rule-based ranking is active because no sufficiently large external restock_success target was supplied.")
+        columns = [
+            "brand", "model", "substitute_for", "substitution_similarity", "price_inr", "purchase_cost",
+            "success_probability", "score", "forecast", "forecast_method", "forecast_mae",
+            "suggested_quantity", "estimated_profit",
+        ]
         display = plan[[column for column in columns if column in plan]]
         st.dataframe(display, use_container_width=True, hide_index=True)
         c1, c2, c3 = st.columns(3)
