@@ -1,3 +1,4 @@
+import hashlib
 import os
 
 import pandas as pd
@@ -6,6 +7,21 @@ import streamlit as st
 from src.missing_values import missing_value_report
 from src.pipeline import InventoryPipeline
 from src.schema import SchemaAdapter, SchemaError
+
+
+@st.cache_data(show_spinner=False)
+def load_builtin(path):
+    return pd.read_csv(path)
+
+
+@st.cache_resource(show_spinner=False)
+def train_pipeline(data_fingerprint, model_name, _data):
+    return InventoryPipeline(model_name=model_name).fit(_data)
+
+
+def fingerprint(frame):
+    values = pd.util.hash_pandas_object(frame.astype(str), index=True).to_numpy()
+    return hashlib.sha256(values.tobytes()).hexdigest()
 
 
 st.set_page_config(page_title="Inventory Intelligence V2", layout="wide")
@@ -17,7 +33,7 @@ source = st.radio("Data source", ["Built-in dataset", "Upload dataset"], horizon
 
 if source == "Built-in dataset":
     path = "Mobile Reviews Sentiment.csv"
-    frame = pd.read_csv(path) if os.path.exists(path) else None
+    frame = load_builtin(path) if os.path.exists(path) else None
     if frame is None:
         st.error("The built-in dataset was not found.")
         st.stop()
@@ -27,7 +43,13 @@ else:
     if uploaded is None:
         st.info("Upload a dataset to continue.")
         st.stop()
+    if uploaded.size > 50 * 1024 * 1024:
+        st.error("Uploads are limited to 50 MB.")
+        st.stop()
     frame = pd.read_csv(uploaded) if uploaded.name.lower().endswith(".csv") else pd.read_excel(uploaded)
+    if len(frame) > 500_000 or len(frame.columns) > 200:
+        st.error("Uploads are limited to 500,000 rows and 200 columns.")
+        st.stop()
     use_genai = st.checkbox("Use LangChain with Gemini schema mapping", value=False)
     try:
         mapping = adapter.suggest_mapping(frame, use_genai=use_genai)
@@ -69,9 +91,11 @@ if source == "Upload dataset":
         else:
             st.dataframe(report, use_container_width=True, hide_index=True)
             st.caption("Model imputers are fitted within training folds to prevent validation leakage.")
+    left_download, right_download = st.columns(2)
+    left_download.download_button("Download canonical valid rows", data.to_csv(index=False), "canonical_valid_rows.csv", "text/csv")
     if not transformed.rejected.empty:
         st.warning(f"{len(transformed.rejected):,} invalid rows were excluded; {len(data):,} valid rows remain.")
-        st.download_button("Download rejected rows", transformed.rejected.to_csv(index=False), "rejected_rows.csv", "text/csv")
+        right_download.download_button("Download rejected rows", transformed.rejected.to_csv(index=False), "rejected_rows.csv", "text/csv")
 
 countries = sorted(data["country"].dropna().astype(str).unique())
 left, middle, right = st.columns(3)
@@ -85,7 +109,7 @@ unavailable = right.multiselect("Unavailable models", sorted(data["model"].astyp
 if st.button("Generate stocking plan", type="primary"):
     with st.spinner("Training and generating recommendations"):
         try:
-            pipeline = InventoryPipeline(model_name=model_name).fit(data)
+            pipeline = train_pipeline(fingerprint(data), model_name, data)
             plan = pipeline.recommend(country, age, budget, total_units, unavailable)
         except Exception as error:
             st.error(f"Pipeline failed: {error}")
@@ -101,6 +125,9 @@ if st.button("Generate stocking plan", type="primary"):
             st.caption(f"Supervised ranking. Selected preprocessing: {selected}. Cross-validation ROC-AUC: {scores}. Holdout ROC-AUC: {holdout:.3f}")
         else:
             st.caption("Transparent rule-based ranking is active because no sufficiently large external restock_success target was supplied.")
+        sentiment = pipeline.metrics.get("sentiment", {})
+        if sentiment.get("oof_roc_auc") is not None:
+            st.caption(f"Sentiment out-of-fold ROC-AUC: {sentiment['oof_roc_auc']:.3f}; F1: {sentiment['oof_f1']:.3f}")
         columns = [
             "brand", "model", "substitute_for", "substitution_similarity", "price_inr", "purchase_cost",
             "success_probability", "score", "forecast", "forecast_method", "forecast_mae",
