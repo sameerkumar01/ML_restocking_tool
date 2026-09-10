@@ -5,20 +5,50 @@ from xgboost import XGBRegressor
 
 
 class DemandForecaster:
-    def __init__(self, blend=0.7):
-        self.blend = blend
-
     def forecast(self, history):
-        values = pd.Series(history, dtype=float).dropna().clip(lower=0)
+        return self.forecast_with_diagnostics(history)["forecast"]
+
+    def forecast_with_diagnostics(self, history):
+        values = self._clean_history(history)
         if values.empty:
-            return 0.0
+            return {"forecast": 0.0, "method": "no_history", "mae": np.nan}
         if len(values) < 3:
-            return float(values.mean())
-        exp = self._exponential(values)
-        if len(values) < 8:
-            return exp
-        ml = self._xgboost(values)
-        return max(0.0, self.blend * ml + (1 - self.blend) * exp)
+            return {"forecast": float(values.mean()), "method": "historical_mean", "mae": np.nan}
+
+        validation_points = min(6, max(2, len(values) // 4))
+        methods = ["naive", "exponential"]
+        if len(values) - validation_points >= 18:
+            methods.extend(["xgboost", "blend"])
+        errors = {method: [] for method in methods}
+        for index in range(len(values) - validation_points, len(values)):
+            train = values.iloc[:index]
+            actual = float(values.iloc[index])
+            for method in methods:
+                prediction = self._predict(train, method)
+                errors[method].append(abs(actual - prediction))
+        mean_errors = {method: float(np.mean(items)) for method, items in errors.items() if items}
+        selected = min(mean_errors, key=mean_errors.get)
+        return {
+            "forecast": max(0.0, float(self._predict(values, selected))),
+            "method": selected,
+            "mae": mean_errors[selected],
+        }
+
+    def _clean_history(self, history):
+        values = pd.to_numeric(pd.Series(history), errors="coerce").clip(lower=0)
+        if values.isna().any():
+            last_gap = np.flatnonzero(values.isna().to_numpy())[-1]
+            values = values.iloc[last_gap + 1:]
+        return values.dropna().reset_index(drop=True)
+
+    def _predict(self, values, method):
+        if method == "naive":
+            return float(values.iloc[-1])
+        if method == "xgboost":
+            return self._xgboost(values)
+        if method == "blend":
+            return 0.7 * self._xgboost(values) + 0.3 * self._exponential(values)
+        return self._exponential(values)
 
     def _exponential(self, values):
         try:
