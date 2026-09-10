@@ -10,7 +10,8 @@ from xgboost import XGBClassifier
 
 
 RATING_NUMERIC = ["rating", "battery_life_rating", "camera_rating", "performance_rating", "design_rating", "display_rating"]
-OTHER_NUMERIC = ["price_inr", "age", "sentiment_score", "net_profit_unit"]
+RATING_MISSING = [f"{name}_missing_rate" for name in RATING_NUMERIC]
+OTHER_NUMERIC = ["price_inr", "age", "sentiment_score", "net_profit_unit"] + RATING_MISSING
 NUMERIC = RATING_NUMERIC + OTHER_NUMERIC
 CATEGORICAL = ["brand", "country"]
 FEATURES = CATEGORICAL + NUMERIC
