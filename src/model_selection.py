@@ -10,8 +10,9 @@ from xgboost import XGBClassifier
 
 RATING_NUMERIC = ["rating", "battery_life_rating", "camera_rating", "performance_rating", "design_rating", "display_rating"]
 OTHER_NUMERIC = ["price_inr", "age", "sentiment_score", "net_profit_unit"]
+NUMERIC = RATING_NUMERIC + OTHER_NUMERIC
 CATEGORICAL = ["brand", "country"]
-FEATURES = CATEGORICAL + RATING_NUMERIC + OTHER_NUMERIC
+FEATURES = CATEGORICAL + NUMERIC
 
 
 def build_model(model_name="xgboost", missing_strategy="mice"):
@@ -22,7 +23,7 @@ def build_model(model_name="xgboost", missing_strategy="mice"):
     if missing_strategy == "native":
         preprocessor = ColumnTransformer([
             ("categorical", categorical, CATEGORICAL),
-            ("numeric", "passthrough", RATING_NUMERIC + OTHER_NUMERIC),
+            ("numeric", "passthrough", NUMERIC),
         ])
     else:
         ratings = Pipeline([
