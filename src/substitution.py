@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 from sklearn.impute import SimpleImputer
 from sklearn.neighbors import NearestNeighbors
@@ -19,12 +18,14 @@ def select_with_substitutes(scored, unavailable=None, limit=5):
     used = set()
     selected = []
 
-    def add_row(position, substitute_for=""):
+    def add_row(position, substitute_for="", similarity=1.0, substitute_score=None):
         row = ranked.iloc[position].copy()
         name = str(row["model"]).lower()
         if name in used:
             return False
         row["substitute_for"] = substitute_for
+        row["substitution_similarity"] = float(similarity)
+        row["substitute_score"] = float(row["score"] if substitute_score is None else substitute_score)
         selected.append(row)
         used.add(name)
         return True
@@ -46,10 +47,25 @@ def select_with_substitutes(scored, unavailable=None, limit=5):
             continue
         neighbors = NearestNeighbors(n_neighbors=len(eligible), metric="euclidean")
         neighbors.fit(values[eligible])
-        _, order = neighbors.kneighbors(values[position].reshape(1, -1))
-        replacement = eligible[int(order[0][0])]
-        add_row(replacement, str(ranked.iloc[position]["model"]))
+        distances, order = neighbors.kneighbors(values[position].reshape(1, -1))
+        choices = []
+        for distance, local_index in zip(distances[0], order[0]):
+            replacement = eligible[int(local_index)]
+            candidate = ranked.iloc[replacement]
+            similarity = 1 / (1 + float(distance))
+            business_score = (
+                0.60 * similarity
+                + 0.25 * float(candidate.get("success_probability", 0.5))
+                + 0.15 * float(candidate.get("normalized_profit", 0.0))
+            )
+            choices.append((business_score, similarity, replacement))
+        business_score, similarity, replacement = max(choices, key=lambda item: item[0])
+        add_row(replacement, str(ranked.iloc[position]["model"]), similarity, business_score)
 
     if not selected:
-        return ranked.iloc[0:0].assign(substitute_for=pd.Series(dtype=str))
-    return pd.DataFrame(selected).reset_index(drop=True)
+        empty = ranked.iloc[0:0].copy()
+        empty["substitute_for"] = pd.Series(dtype=str)
+        empty["substitution_similarity"] = pd.Series(dtype=float)
+        empty["substitute_score"] = pd.Series(dtype=float)
+        return empty
+    return pd.DataFrame(selected).sort_values(["substitute_score", "score"], ascending=False).head(limit).reset_index(drop=True)
