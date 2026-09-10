@@ -1,95 +1,53 @@
 # Mobile Inventory Restocking Tool V2
 
-A production-oriented machine learning application for demand forecasting, market scoring, sentiment analysis, schema-adaptive data ingestion and inventory allocation.
+A schema-adaptive inventory recommendation application combining explainable ranking, optional supervised product-success modeling, sentiment analysis, demand forecasting, profit-aware allocation and product substitution.
 
-## What changed in V2
+## Highlights
 
-V2 replaces the notebook-only workflow with reusable Python modules and a Streamlit application. It keeps exponential smoothing, country and age analysis, and exact stock allocation while adding advanced models, user-dataset ingestion, missing-value controls and KNN-based product substitution.
-
-The advanced stack includes:
-
-- XGBoost classification for product-success scoring
-- Random Forest as a comparison model
+- Streamlit application for built-in and uploaded CSV/XLSX datasets
+- Deterministic schema aliases with optional LangChain and Gemini assistance
+- Row-level validation, missing-value reports and downloadable rejected rows
+- MICE for correlated rating aggregates and median handling for other numeric predictors
+- Transparent rule-based ranking when an external target is unavailable
+- Optional XGBoost or Random Forest success modeling with an observed `restock_success` target
 - Cross-validated comparison of MICE and native XGBoost missing-value handling
-- XGBoost regression with lag features for demand forecasting
-- Damped exponential smoothing retained in a blended forecast
-- TF-IDF and lexicon features with a calibrated linear SVM for sentiment analysis
-- LangChain with Google Gemini for uploaded-dataset schema mapping
-- Type-aware missing-value handling and downloadable rejected-row reports
-- Profit calculations based on observed purchase cost when available
-- KNN-based substitutes for unavailable recommended products
-- Exact largest-remainder stock allocation
-- Streamlit interface and downloadable recommendations
+- Out-of-fold TF-IDF, lexicon and calibrated Linear SVM sentiment scores
+- Walk-forward comparison of naive, exponential-smoothing, XGBoost and blended forecasts
+- Purchase-cost-based profit estimates with documented fallbacks
+- KNN substitute ranking using similarity, success probability and profit
+- Exact largest-remainder unit allocation
 
-## V2 workflow
+## Workflow
 
 ```mermaid
 flowchart TB
-    subgraph INPUT["1. Data ingestion"]
-        direction LR
-        A{Data source} -->|Built-in| B[Default dataset]
-        A -->|Upload| C[CSV or XLSX]
-        C --> D[Profile column metadata]
-        D --> E[LangChain and Gemini mapping]
-        B --> F[Canonical schema]
-        E --> F
-        F --> G{Valid row?}
-        G -->|No| H[Rejected-row report]
-        G -->|Yes| I[Type-aware missing-value handling]
-        I --> J[Country, age, budget and units]
-    end
-
-    subgraph FEATURES["2. Feature engineering"]
-        direction LR
-        K{Usable review text?}
-        K -->|Yes| L[TF-IDF and lexicon features]
-        L --> M[Calibrated Linear SVM]
-        K -->|No| N[Sentiment label or rating proxy]
-        M --> O[Sentiment score]
-        N --> O
-        O --> P[Market and demographic features]
-        P --> Q[Observed cost, return risk and unit profit]
-        P --> R[Monthly demand and lag features]
-        P --> S[Hardware similarity features]
-    end
-
-    subgraph MODELS["3. Modeling"]
-        direction LR
-        Q --> T[XGBoost classifier]
-        Q --> U[Random Forest baseline]
-        T --> V[Cross-validation and holdout evaluation]
-        U --> V
-        V --> W[Success probability]
-        R --> X[Exponential smoothing]
-        R --> Y[XGBoost regression]
-        X --> Z[Blend forecasts]
-        Y --> Z
-    end
-
-    subgraph SUBSTITUTE["4. Ranking and substitution"]
-        direction LR
-        W --> AA[Combine success, demand and profit]
-        Z --> AA
-        AA --> AB[Rank candidates]
-        AB --> AC{Available?}
-        AC -->|Yes| AD[Keep recommendation]
-        AC -->|No| AE[KNN similarity search]
-        S --> AE
-        AE --> AF[Check country and budget]
-        AF --> AG[Insert substitute and re-rank]
-        AG --> AB
-    end
-
-    subgraph OUTPUT["5. Inventory plan"]
-        direction LR
-        AH[Select top five] --> AI[Allocate exact units]
-        AI --> AJ[Estimate revenue and profit]
-        AJ --> AK[Charts and evaluation details]
-        AK --> AL[Download stocking plan]
-    end
-
-    J --> K
-    AD --> AH
+    A{Data source} -->|Built-in| B[Default review dataset]
+    A -->|Upload| C[CSV or XLSX]
+    C --> D[Deterministic or Gemini schema mapping]
+    B --> E[Canonical schema]
+    D --> E
+    E --> F[Validate rows and report missing values]
+    F --> G{Usable review text and labels?}
+    G -->|Yes| H[Out-of-fold calibrated SVM sentiment]
+    G -->|No| I[Label or rating sentiment fallback]
+    H --> J[Market-level features]
+    I --> J
+    J --> K{Observed restock_success target sufficient?}
+    K -->|Yes| L[XGBoost or Random Forest]
+    K -->|No| M[Transparent rule-based ranking]
+    L --> N[Success probability]
+    M --> N
+    J --> O[Monthly demand history]
+    O --> P[Walk-forward forecast selection]
+    N --> Q[Profit-aware product ranking]
+    P --> Q
+    Q --> R{Recommended model available?}
+    R -->|No| S[KNN substitute ranking]
+    R -->|Yes| T[Keep product]
+    S --> U[Top five products]
+    T --> U
+    U --> V[Exact stock allocation]
+    V --> W[Results, diagnostics and downloads]
 ```
 
 ## Architecture
@@ -106,54 +64,33 @@ src/
   sentiment.py
   substitution.py
 notebooks/
-  eda_v2.ipynb
+  EDA_V2.ipynb
+  eda_outputs/
 tests/
   test_core.py
+DATA_CARD.md
+requirements.txt
+requirements-dev.txt
+pyproject.toml
+ci.yml.example
 Mobile Reviews Sentiment.csv
 ```
 
 ## Data modes
 
-- Full mode: product, price, date, demand or review records, and sentiment information
-- Forecast mode: product, price, date, and demand or review records
-- Review mode: product, price, and review text or sentiment
-- Recommendation mode: product and price
+The application degrades gracefully according to the uploaded data:
 
-Product and price are required. Optional ratings, age, brand and country are handled according to their data type when values are absent.
-
-## Missing values in uploaded datasets
-
-Uploaded datasets can contain incomplete records without forcing the pipeline to treat every missing value the same way. The ingestion layer converts mapped fields to canonical types, recovers prices when possible, separates unusable rows, and displays a missing-value report before training. Valid rows continue through the pipeline, while rejected rows can be downloaded for correction.
-
-Model imputers are fitted inside scikit-learn pipelines. This prevents validation information from leaking into training transformations. XGBoost with MICE is compared against XGBoost's native missing-value handling through stratified cross-validation, and the winning strategy is checked on a holdout set before the final model is trained.
-
-| Data type | Examples | Handling |
+| Mode | Available information | Behavior |
 | --- | --- | --- |
-| Required identifiers | `model` | Reject rows with missing or blank identifiers |
-| Required price | `price_inr`, `price_usd` | Recover INR from USD when possible; otherwise reject the row |
-| Correlated numeric features | Product rating fields | MICE with `IterativeImputer` inside the training pipeline |
-| Other numeric predictors | `age`, `purchase_cost` | Country- or brand-level median followed by a safe global fallback |
-| Categorical features | `brand`, `country` | Fill with `"Unknown"` or `"Global"` and safely encode unseen categories |
-| Review text | `review_text` | Replace missing text with an empty string and use a sentiment fallback when needed |
-| Regression target | `units_sold` | Never impute training targets; train only with observed values |
-| Missing time periods | Monthly demand | Reindex the series; use zero for absent review activity and short interpolation for internal sales gaps |
-| Dates | `review_date` | Reject invalid forecasting rows and report the reason |
+| Full | Product, price, dates, demand and reviews | Ranking, sentiment and forecasting |
+| Forecast | Product, price, dates and demand | Forecasting plus non-text ranking |
+| Review | Product, price and review information | Sentiment-informed ranking |
+| Recommendation | Product and selling price | Transparent rule-based ranking |
+| Supervised | Any mode plus sufficient `restock_success` labels | XGBoost or Random Forest success probabilities |
 
-MICE is reserved for correlated rating variables. Ordinary numeric predictors use simpler median strategies. Categorical fields are not passed to KNN imputation because numeric distances between encoded categories would not represent meaningful similarity. KNN is instead used where distance is meaningful: finding a similar available product by price and hardware ratings.
+The bundled review dataset does not contain an externally observed product-success target. It therefore uses transparent ranking instead of training a classifier to reproduce a proxy label.
 
-## LangChain and Gemini schema mapping
-
-The optional mapper uses LangChain's `ChatGoogleGenerativeAI` integration and the `gemini-flash-latest` model alias. It sends only column names, inferred types and nullability. Dataset rows are not sent. Gemini returns a structured mapping through a Pydantic schema, and Python validates it before applying approved renaming and type conversions. Generated code is not executed.
-
-Create a Gemini API key in Google AI Studio and set it before starting the app:
-
-```bash
-export GOOGLE_API_KEY="your-key"
-```
-
-Gemini API free-tier availability and rate limits depend on Google's current terms and selected region. Manual and deterministic mapping remain available without an API key.
-
-## Canonical fields
+## Required and optional fields
 
 Required:
 
@@ -169,92 +106,125 @@ Optional:
 - `review_date`
 - `review_text`
 - `sentiment`
-- `rating`
-- `battery_life_rating`
-- `camera_rating`
-- `performance_rating`
-- `design_rating`
-- `display_rating`
+- Product rating fields
 - `units_sold`
 - `purchase_cost`
+- `restock_success`
 
-Alternate names such as `product`, `mobile_name`, `nation`, `sales` and `cost` can be mapped to this schema.
+`restock_success` must be an externally observed binary outcome, such as whether a prior restocking decision met its defined business target. It is never created from the same model inputs.
 
-## Modeling approach
+Generic `cost` is intentionally not mapped automatically because it could mean selling price or purchase cost. Prefer explicit names such as `selling_price`, `retail_price`, `procurement_cost` or `wholesale_cost`, or confirm the mapping manually.
 
-### Product-success model
+## Missing values in uploads
 
-Country and product records are aggregated into a market table. A proxy winner label is created from country-level sentiment and demand thresholds. XGBoost is the default classifier, with Random Forest available for comparison. Correlated rating features use MICE, other numeric values use median strategies and categorical values use explicit unknown categories.
+| Data type | Examples | Handling |
+| --- | --- | --- |
+| Required identifiers | `model` | Reject invalid rows |
+| Required selling price | `price_inr`, `price_usd` | Recover INR from USD when possible; otherwise reject |
+| Correlated numeric features | Product ratings | MICE inside training folds; preserve group missingness rates |
+| Other numeric predictors | `age`, `purchase_cost` | Group median, global median and documented fallback |
+| Categorical features | `brand`, `country` | `Unknown` or `Global`, followed by safe encoding |
+| Review text | `review_text` | Empty string with sentiment fallback when text is insufficient |
+| Regression target | `units_sold` | Never impute training targets |
+| Success target | `restock_success` | Use only observed labels; otherwise use rule-based ranking |
+| Missing monthly periods | Demand history | Zero for absent review activity; short internal interpolation for sales gaps |
+| Forecast dates | `review_date` | Reject invalid forecasting rows |
 
-For XGBoost, MICE and native missing-value handling are compared using stratified cross-validation. The selected strategy is evaluated on a holdout set, and both results are displayed in the application.
+Valid rows continue through the pipeline. Rejected rows include reasons and can be downloaded. The application also exports canonical valid rows.
 
-The built-in dataset contains review activity rather than verified transactions, so the target is a proxy. Production deployments should use an observed outcome such as target attainment, stock-out risk or profitable restocking.
+## Product ranking
 
-### Demand forecast
+### Rule-based mode
 
-Monthly demand uses `units_sold` when available, and missing regression targets are excluded rather than imputed. Otherwise, monthly review volume is used as a demand proxy. The forecast combines damped exponential smoothing with XGBoost regression using three lags and a rolling mean. Monthly series are reindexed so absent review activity can be represented as zero, while short internal sales gaps can be interpolated.
+When no reliable external target exists, the application reports a transparent ranking based on:
 
-### Sentiment
+- 45% sentiment
+- 35% average product ratings
+- 20% normalized demand activity
 
-When sufficient labeled review text is available, the pipeline trains TF-IDF and lexicon features with a calibrated linear SVM and uses positive-class probabilities as sentiment scores. If text is empty or labels are insufficient, it safely falls back to existing sentiment labels or rating-derived scores.
+This score is combined with normalized expected unit profit using a harmonic mean. Products with non-positive expected unit profit are excluded.
 
-### Profit and allocation
+### Supervised mode
 
-Observed `purchase_cost` is used when supplied. Missing costs fall back through brand and global medians before a documented heuristic margin is used. Net unit profit accounts for expected return cost. The final rank uses the harmonic mean of success probability and normalized estimated profit, and largest-remainder allocation guarantees that suggested quantities sum exactly to the requested units.
+When enough observed `restock_success` examples from both classes are available, XGBoost or Random Forest is trained. The target is not included among model features. For XGBoost, MICE and native missing-value handling are compared using stratified cross-validation, and the selected approach is evaluated on a holdout set.
 
-### Product substitution
+## Sentiment
 
-Recommendations are scored before availability is checked. If a selected model is unavailable, standardized price and hardware-rating features are passed to a KNN search. The nearest eligible product within the selected country and budget replaces it, and the output records the original model in `substitute_for`.
+When enough positive and negative labeled reviews are available, TF-IDF word and bigram features are combined with lexicon features and a calibrated Linear SVM. Out-of-fold probabilities are used for training records to prevent in-sample sentiment predictions from leaking into downstream modeling. A final model is fitted for new or unlabeled text.
+
+If there is insufficient usable text, the pipeline falls back to an existing sentiment label or rating-derived score. Out-of-fold ROC-AUC and F1 are displayed when available.
+
+## Demand forecasting
+
+Monthly demand uses observed `units_sold` when available. Otherwise, review activity is clearly treated as a demand proxy. Missing target values are not imputed.
+
+Walk-forward validation compares available methods:
+
+- Naive last value
+- Damped exponential smoothing
+- XGBoost lag regression when at least 18 pre-validation observations exist
+- A blended XGBoost and exponential-smoothing forecast
+
+The method with the lowest validation MAE produces the final forecast. The selected method and MAE are shown in the stocking plan.
+
+## Profit and substitution
+
+Observed purchase cost is preferred. Missing costs fall back through brand and global medians before a documented margin assumption is used. Net unit profit subtracts expected return costs, and non-profitable candidates are excluded.
+
+If a recommended product is unavailable, KNN compares standardized selling price and hardware-rating features. Replacement candidates are ranked with:
+
+- 60% similarity
+- 25% success probability
+- 15% normalized profit
+
+The output identifies the original product in `substitute_for` and reports substitution similarity.
+
+## LangChain and Gemini
+
+The optional mapper uses LangChain's `ChatGoogleGenerativeAI` integration and `gemini-flash-latest`. Only column names, inferred types and nullability are sent. Dataset rows are not sent. Deterministic mappings take priority over Gemini suggestions, and every mapping remains editable before processing.
+
+```bash
+export GOOGLE_API_KEY="your-key"
+```
+
+Free-tier access and rate limits depend on Google's current terms and region.
 
 ## Installation
+
+Python 3.11–3.13 is supported.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
-On Windows:
-
-```bash
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-## Run
+Run the application:
 
 ```bash
 streamlit run app.py
 ```
 
-Choose the built-in dataset or upload a CSV/XLSX file, confirm the schema mapping, review rejected rows and missing-value handling, select the target market, and generate a stocking plan.
-
-## Tests
+Run tests:
 
 ```bash
-pytest -q
+pytest
+python -m compileall -q app.py src tests
 ```
 
-Tests cover exact allocation, schema mapping, currency recovery, rejected rows, missing-value reports, sentiment fallback, purchase-cost profit calculations and KNN substitutions.
+## Continuous integration
 
-## Current assumptions
+A workflow template is provided as `ci.yml.example`. Copy it to `.github/workflows/ci.yml` to enable automated compilation and tests on pushes and pull requests. The current GitHub integration did not have permission to create workflow files directly.
 
-- Built-in review counts are demand proxies, not confirmed sales.
-- USD prices use a fixed conversion rate of 87 INR per USD.
-- Return costs and fallback margins remain heuristic until transaction data is supplied.
-- The winner label is based on relative sentiment and demand within each country.
-- Gemini mapping is advisory and always followed by deterministic validation.
-- Short sales gaps are interpolated only inside an observed monthly series.
+## Data governance
 
-## Recommended production data
+See `DATA_CARD.md` for intended use, limitations, privacy considerations and the missing source-license information that must be completed before production redistribution.
 
-- Historical units sold
-- Current inventory
-- Purchase cost and selling price
-- Supplier lead time
-- Minimum order quantity
-- Maximum supplier capacity
-- Returns and lost sales
-- Storage cost and procurement budget
+## Current limitations
 
-These fields can support constrained profit optimization and stock-out risk prediction in a later release.
+- The bundled review dataset is demonstration data, not verified transaction history.
+- Review counts are not equivalent to sales.
+- Return costs and fallback margins remain heuristic.
+- The application does not yet optimize against total procurement budget, lead time, current stock, MOQ or supplier capacity.
+- The per-product XGBoost forecast remains experimental and is enabled only for sufficiently long histories.
+- A deployed demonstration and persisted model registry are not included.
