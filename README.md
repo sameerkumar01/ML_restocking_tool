@@ -302,20 +302,6 @@ Run the application:
 streamlit run app.py
 ```
 
-## Optional Gemini mapping
-
-Set a Google API key before enabling Gemini schema mapping:
-
-```bash
-export GOOGLE_API_KEY="your-key"
-```
-
-On Windows PowerShell:
-
-```powershell
-$env:GOOGLE_API_KEY="your-key"
-```
-
 ## Testing
 
 Run the unit tests:
