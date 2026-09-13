@@ -2,6 +2,10 @@
 
 An end-to-end machine learning application that recommends which mobile products to restock and how many units to allocate. It combines product reviews, ratings, demand history, pricing and purchase costs to generate an explainable stocking plan through a Streamlit interface.
 
+## Live demo
+
+[Open the deployed Streamlit application](http://15.252.145.171:8501/)
+
 ## Project overview
 
 Inventory planning involves more than selecting the highest-rated products. A practical system must understand customer sentiment, estimate demand, account for profitability, handle unavailable products and work with incomplete business data.
