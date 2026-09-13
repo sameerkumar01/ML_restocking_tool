@@ -1,3 +1,5 @@
+"""Frontend regression tests for the updated Streamlit UI."""
+
 import sys
 import types
 
